@@ -63,8 +63,8 @@ def test_al_centre_hi_ha_ruta_en_bus_i_les_linies_sense_servei_no_entren(xarxa, 
     bus = [a for a in r["alternatives"] if "bus" in a["modes"]]
     assert bus, "hi ha d'haver alguna alternativa amb bus"
     linies = {l["linia"] for a in bus for l in a["trams"] if l["tipus"] == "bus"}
-    # si només circulen les que no ha triat, ha de buscar-ne una altra (o cap)
-    r2 = im.ruta(o, d, en_servei={"zzz"} | {f"x{i}" for i in range(5)})
+    # si les que ha triat no circulen, ha de buscar-ne una altra (o cap)
+    r2 = im.ruta(o, d, bus_fora=linies)
     linies2 = {l["linia"] for a in r2["alternatives"] for l in a["trams"] if l["tipus"] == "bus"}
     assert not (linies & linies2)
     assert set(r2["fora_de_servei"]) >= linies

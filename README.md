@@ -60,9 +60,11 @@ un transbord). Metro: distància sobre la via i **l'espera real dels panells de
 FGV** (el primer tren de la línia en el sentit bo que passa després d'arribar a
 l'estació). Bus: EMT no publica arribades, així que espera estimada (6 min) i la
 distància pel recorregut de la línia entre les dues parades (precalculada,
-`data/intermodal_dist.json`, gitignored). Les línies que no han tingut cap bus
-en la darrera mitja hora (els nocturns de dia...) i les de metro sense cap tren
-als panells no entren. Dona fins a tres alternatives: combinada, només metro i
+`data/intermodal_dist.json`, gitignored). No entren les línies que surten al
+geoportal però no han tingut cap bus en la darrera mitja hora (els nocturns de
+dia...) ni les de metro sense cap tren als panells. ⚠️ El geoportal només dona
+el GPS d'unes 22 de les ~44 línies: les que no hi surten mai no es poden jutjar
+i sempre entren. Dona fins a tres alternatives: combinada, només metro i
 només bus.
 
 `web/intermodal.js` és el MATEIX fitxer que a MetroViu (`data-app="bus"`): panell

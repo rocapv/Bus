@@ -520,13 +520,11 @@ def _descriu(g: _Graf, trams, orig, dest, buses_vius) -> dict:
             "pujades": sum(1 for l in out if l["tipus"] != "peu")}
 
 
-def _sense_servei(g: _Graf, arr: dict, en_servei: set[str] | None) -> set[str]:
-    """Línies que ara no circulen: busos sense cap vehicle en la darrera mitja hora
-    (els nocturns de dia, els diürns de nit) i metros sense cap tren als panells.
-    Si les dades en directe no són de fiar (poques o velles), no se'n lleva cap."""
-    fora = set()
-    if en_servei and len(en_servei) >= 5:
-        fora |= {k for k, ln in g.linies.items() if ln["mode"] == "bus" and ln["nom"] not in en_servei}
+def _sense_servei(g: _Graf, arr: dict, bus_fora: set[str] | None) -> set[str]:
+    """Línies que ara no circulen: les de bus que diu l'API (surten al geoportal però
+    no en la darrera mitja hora) i les de metro sense cap tren als panells (si els
+    panells són recents i en porten d'altres línies)."""
+    fora = {k for k, ln in g.linies.items() if ln["mode"] == "bus" and ln["nom"] in (bus_fora or ())}
     ests = arr.get("estaciones") or {}
     if ests and (arr.get("edad_seg") or 0) < 900:
         amb = {a.get("linea") for v in ests.values() for a in v}
@@ -536,13 +534,13 @@ def _sense_servei(g: _Graf, arr: dict, en_servei: set[str] | None) -> set[str]:
     return fora
 
 
-def ruta(orig, dest, buses_vius=(), en_servei: set[str] | None = None) -> dict:
+def ruta(orig, dest, buses_vius=(), bus_fora: set[str] | None = None) -> dict:
     """orig/dest = (lat, lng). Alternatives ordenades per temps. buses_vius: l'última
-    pasada (per a dir quants n'hi ha de cada línia); en_servei: línies vistes en la
-    darrera mitja hora (None = no se'n sap res i no se'n descarta cap)."""
+    pasada (per a dir quants n'hi ha de cada línia); bus_fora: línies de bus que ara
+    no circulen (no entren en la recerca)."""
     g = _get_graf()
     arr = _arribades()
-    fora = _sense_servei(g, arr, en_servei)
+    fora = _sense_servei(g, arr, bus_fora)
     alts, vistes = [], set()
     for nom, modes in (("combinada", {"bus", "metro"}), ("metro", {"metro"}), ("bus", {"bus"})):
         with _lock:                                   # el graf guarda origen/destí als nodes 0/1

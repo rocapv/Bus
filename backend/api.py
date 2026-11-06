@@ -155,27 +155,53 @@ def _punt(txt: str) -> tuple[float, float] | None:
 
 
 _servei_cache: tuple[float, set[str] | None] = (0.0, None)
+_gps_cache: tuple[float, set[str]] = (0.0, set())
 
 
-def _linies_en_servei(finestra: int = 1800) -> set[str] | None:
-    """Línies amb algun bus en les pasades dels últims 30 min (una pasada sola en
-    porta de vegades la meitat). None si el poller no té dades recents."""
+def _linies_amb_gps() -> set[str]:
+    """Línies que alguna vegada surten al geoportal (una pasada per hora dels últims
+    7 dies). El geoportal NO dona el GPS de totes: a migdia, ~22 de ~44 línies."""
+    global _gps_cache
+    if time.time() - _gps_cache[0] < 3600:
+        return _gps_cache[1]
+    from . import lectures
+    out: set[str] = set()
+    try:
+        con = _con()
+        ids = [r[0] for r in con.execute(
+            "SELECT MIN(id) FROM snapshots WHERE ts >= ? GROUP BY ts / 3600",
+            (int(time.time()) - 7 * 86400,))]
+        for i in ids:
+            out.update(f[1] for f in lectures.de_pasada(con, i))
+        con.close()
+    except Exception:  # noqa: BLE001
+        pass
+    _gps_cache = (time.time(), out)
+    return out
+
+
+def _linies_sense_servei(finestra: int = 1800) -> set[str]:
+    """Línies que surten al geoportal però no han tingut cap bus en les pasades dels
+    últims 30 min (els nocturns de dia, els diürns de nit). Les que el geoportal no
+    dona mai no s'hi poden jutjar i es queden. Buit si el poller no té dades recents."""
     global _servei_cache
     if time.time() - _servei_cache[0] < 120:
         return _servei_cache[1]
     from . import lectures
-    out: set[str] | None = None
+    out: set[str] = set()
     try:
         con = _con()
         ids = [r["id"] for r in con.execute("SELECT id FROM snapshots WHERE ts >= ? ORDER BY id",
                                             (int(time.time()) - finestra,))]
         if len(ids) >= 5:
-            out = set()
+            vistes: set[str] = set()
             for i in ids:
-                out.update(f[1] for f in lectures.de_pasada(con, i))
+                vistes.update(f[1] for f in lectures.de_pasada(con, i))
+            if len(vistes) >= 5:
+                out = _linies_amb_gps() - vistes
         con.close()
     except Exception:  # noqa: BLE001
-        out = None
+        out = set()
     _servei_cache = (time.time(), out)
     return out
 
@@ -192,7 +218,7 @@ def api_intermodal(o: str, d: str):
     except Exception:  # noqa: BLE001
         vius = []
     try:
-        return intermodal.ruta(po, pd, vius, _linies_en_servei())
+        return intermodal.ruta(po, pd, vius, _linies_sense_servei())
     except RuntimeError as e:                       # MetroViu caigut: no hi ha xarxa de metro
         return JSONResponse({"error": str(e)}, status_code=503)
 
