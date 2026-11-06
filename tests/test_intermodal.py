@@ -1,5 +1,7 @@
 """intermodal.ruta: metro + bus entre dos punts, amb una xarxa de metro de mentida
 (sense xarxa: no es demana res a MetroViu)."""
+import time
+
 import pytest
 
 from backend import intermodal as im
@@ -68,3 +70,13 @@ def test_al_centre_hi_ha_ruta_en_bus_i_les_linies_sense_servei_no_entren(xarxa, 
     linies2 = {l["linia"] for a in r2["alternatives"] for l in a["trams"] if l["tipus"] == "bus"}
     assert not (linies & linies2)
     assert set(r2["fora_de_servei"]) >= linies
+
+
+def test_els_nocturns_no_entren_de_dia(xarxa, monkeypatch):
+    monkeypatch.setattr(im, "_arribades", lambda: {"ts": None, "estaciones": {}})
+    migdia = time.struct_time((2026, 11, 6, 12, 0, 0, 4, 310, 0))
+    monkeypatch.setattr(im.time, "localtime", lambda *a: migdia)
+    r = im.ruta((39.4699, -0.3763), (39.4628, -0.3245))
+    assert all(n.startswith("N") for n in r["fora_de_servei"]) and "N9" in r["fora_de_servei"]
+    linies = {l["linia"] for a in r["alternatives"] for l in a["trams"] if l["tipus"] == "bus"}
+    assert not any(l.startswith("N") for l in linies)

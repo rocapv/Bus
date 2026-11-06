@@ -64,7 +64,8 @@ distància pel recorregut de la línia entre les dues parades (precalculada,
 geoportal però no han tingut cap bus en la darrera mitja hora (els nocturns de
 dia...) ni les de metro sense cap tren als panells. ⚠️ El geoportal només dona
 el GPS d'unes 22 de les ~44 línies: les que no hi surten mai no es poden jutjar
-i sempre entren. Dona fins a tres alternatives: combinada, només metro i
+i sempre entren, llevat d'un horari a grans trets: nocturns (N*) només de 22 a 6 h
+i diürns fora de 0 a 5.30 h. Dona fins a tres alternatives: combinada, només metro i
 només bus.
 
 `web/intermodal.js` és el MATEIX fitxer que a MetroViu (`data-app="bus"`): panell

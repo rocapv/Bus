@@ -525,6 +525,13 @@ def _sense_servei(g: _Graf, arr: dict, bus_fora: set[str] | None) -> set[str]:
     no en la darrera mitja hora) i les de metro sense cap tren als panells (si els
     panells són recents i en porten d'altres línies)."""
     fora = {k for k, ln in g.linies.items() if ln["mode"] == "bus" and ln["nom"] in (bus_fora or ())}
+    # el geoportal no dona mai el GPS dels nocturns (ni de mitja xarxa diürna): horari a grans trets
+    lt = time.localtime()
+    h = lt.tm_hour + lt.tm_min / 60
+    nit = h >= 22 or h < 6
+    dia = not (0 <= h < 5.5)
+    fora |= {k for k, ln in g.linies.items() if ln["mode"] == "bus"
+             and ((ln["nom"].startswith("N") and not nit) or (not ln["nom"].startswith("N") and not dia))}
     ests = arr.get("estaciones") or {}
     if ests and (arr.get("edad_seg") or 0) < 900:
         amb = {a.get("linea") for v in ests.values() for a in v}
