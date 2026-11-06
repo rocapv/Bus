@@ -305,7 +305,7 @@ function actualizarBuses(data, edad) {
   // registra línies noves (per si un bus circula d'una línia sense trazado)
   let cambio = false;
   for (const b of busos) if (b.linea && !lineasVistas.has(b.linea)) {
-    lineasVistas.add(b.linea); lineasVisibles.add(b.linea); cambio = true;
+    lineasVistas.add(b.linea); if (!filtreActiu) lineasVisibles.add(b.linea); cambio = true;
   }
 
   for (const b of busos) {
@@ -417,7 +417,11 @@ function animar() {
   }
 }
 
-/* ---------- llegenda (toggle línia: trazado + busos) ---------- */
+/* ---------- llegenda: filtre de línies ----------
+   Amb totes visibles, tocar una línia deixa NOMÉS eixa (i hi acosta el mapa).
+   Amb el filtre posat, tocar-ne una altra l'afig i tocar-ne una visible la lleva;
+   si no en queda cap, o es toca «Totes», tornen totes. */
+let filtreActiu = false;
 function construirLeyenda() {
   const ley = document.getElementById("leyenda");
   ley.innerHTML = "";
@@ -426,24 +430,86 @@ function construirLeyenda() {
     const chip = document.createElement("span");
     chip.className = "chip" + (lineasVisibles.has(l) ? "" : " off");
     chip.textContent = l;
+    chip.dataset.linia = l;
+    chip.title = filtreActiu ? "" : "Mostra només la línia " + l;
     chip.style.background = colorLinea(l);
-    chip.onclick = () => {
-      if (lineasVisibles.has(l)) {
-        lineasVisibles.delete(l); chip.classList.add("off");
-        if (routeLayers[l]) map.removeLayer(routeLayers[l]);
-      } else {
-        lineasVisibles.add(l); chip.classList.remove("off");
-        if (routeLayers[l]) routeLayers[l].addTo(map);
-      }
-      animar();
-    };
+    chip.onclick = () => tocaLinia(l);
     ley.appendChild(chip);
   }
   document.getElementById("ley-count").textContent = lineas.length;
+  actualitzaFiltreUI();
 }
+function tocaLinia(l) {
+  if (!filtreActiu) {
+    lineasVisibles.clear(); lineasVisibles.add(l); filtreActiu = true;
+    enfocaLinia(l);
+  } else if (lineasVisibles.has(l)) {
+    lineasVisibles.delete(l);
+    if (!lineasVisibles.size) return mostraTotes();
+  } else {
+    lineasVisibles.add(l);
+  }
+  aplicaFiltre();
+}
+function mostraTotes() {
+  filtreActiu = false;
+  for (const l of lineasVistas) lineasVisibles.add(l);
+  aplicaFiltre();
+}
+function enfocaLinia(l) {
+  const grp = routeLayers[l];
+  let b = null;
+  if (grp) grp.eachLayer((p) => { b = b ? b.extend(p.getBounds()) : L.latLngBounds(p.getBounds()); });
+  else for (const e of buses) if (e.linea === l) {
+    const ll = e.marker.getLatLng(); b = b ? b.extend(ll) : L.latLngBounds(ll, ll);
+  }
+  if (b && b.isValid()) map.fitBounds(b, { padding: [40, 40], maxZoom: 15 });
+}
+function aplicaFiltre() {
+  for (const [l, grp] of Object.entries(routeLayers)) {
+    const vis = lineasVisibles.has(l);
+    if (vis && !map.hasLayer(grp)) grp.addTo(map);
+    else if (!vis && map.hasLayer(grp)) map.removeLayer(grp);
+  }
+  // parades: amb filtre, només les que servixen alguna línia visible
+  for (const m of marcadorsParada.values()) {
+    const lin = m.parada.lineas || [];
+    const vis = !filtreActiu || lin.some((x) => lineasVisibles.has(x));
+    if (vis && !stopsLayer.hasLayer(m)) stopsLayer.addLayer(m);
+    else if (!vis && stopsLayer.hasLayer(m)) stopsLayer.removeLayer(m);
+  }
+  document.querySelectorAll("#leyenda .chip").forEach((c) => {
+    c.classList.toggle("off", !lineasVisibles.has(c.dataset.linia));
+    c.title = filtreActiu ? "" : "Mostra només la línia " + c.dataset.linia;
+  });
+  actualitzaFiltreUI();
+  animar();
+  pintaStats();
+}
+function actualitzaFiltreUI() {
+  const b = document.getElementById("ley-totes");
+  if (b) b.style.display = filtreActiu ? "" : "none";
+  const h = document.getElementById("ley-hint");
+  if (h) h.textContent = filtreActiu
+    ? "toca'n una altra per afegir-la o una visible per llevar-la"
+    : "toca una línia per veure-la sola";
+}
+const totesBtn = document.getElementById("ley-totes");
+if (totesBtn) totesBtn.addEventListener("click", mostraTotes);
 
 /* ---------- refresc de dades ---------- */
-let refrescant = false;
+let refrescant = false, nBusos = 0;
+function pintaStats() {
+  const edad = edadSeg == null ? "—" : (edadSeg < 90 ? edadSeg + " s" : Math.round(edadSeg / 60) + " min");
+  let filtro = "";
+  if (filtreActiu) {
+    const n = buses.filter((e) => lineasVisibles.has(e.linea)).length;
+    const ls = [...lineasVisibles].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+    filtro = `<br><span style="color:#9a9aac">línia ${ls.join(", ")}: <b>${n}</b> busos</span>`;
+  }
+  document.getElementById("stats").innerHTML =
+    `<b>${nBusos}</b> busos en directe<br>dades fa <b>${edad}</b>${filtro}`;
+}
 async function refrescar() {
   if (refrescant) return;
   refrescant = true;
@@ -458,12 +524,8 @@ async function refrescar() {
       actualizarBuses(data, edadSeg);
     }
     animar();
-    const edad = data.edad_seg == null ? "—" : (data.edad_seg < 90 ? data.edad_seg + " s"
-      : Math.round(data.edad_seg / 60) + " min");
-    const vis = [...lineasVisibles].length, tot = lineasVistas.size;
-    const filtro = vis < tot ? `<br><span style="color:#9a9aac">${vis}/${tot} línies visibles</span>` : "";
-    document.getElementById("stats").innerHTML =
-      `<b>${(data.busos || []).length}</b> busos en directe<br>dades fa <b>${edad}</b>${filtro}`;
+    nBusos = (data.busos || []).length;
+    pintaStats();
   } catch (e) {
     document.getElementById("stats").textContent = "sense connexió amb el servidor";
   } finally {
