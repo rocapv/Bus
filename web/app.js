@@ -1,11 +1,13 @@
-/* EMTropello · frontend (valencià) — busos d'EMT València en directe.
-   La Raspa sondeja el geoportal cada 5 min i el client demana cada 1 min. NO
-   s'extrapola: cada bus es pinta en la seua ÚLTIMA posició GPS real (enganxada a
-   la via), i "salta"/llisca cap a la nova cada vegada que arriba dada nova. Així
-   queda sobre el traçat i és exacte (extrapolar en recta el treia de la corba).
-   La velocitat (posició actual - anterior) només s'usa per orientar la fletxa. */
+/* Bus · frontend (valencià) — busos d'EMT València en directe (abans EMTropello).
+   El poller de la Raspa llig el geoportal cada minut i dona a cada bus el seu
+   número; el client pregunta cada pocs segons si hi ha pasada nova
+   (/api/ultimo) i, quan n'hi ha, reajusta la simulació: cada bus avança AL LLARG
+   de la seua ruta entre una dada i la següent.
+   Enllaços directes: bus.pr1.es/<parada> i bus.pr1.es/<número de bus> (si ja no
+   circula, el seu recorregut: historia.js). Popups amb pestanyes. Xat: xat.js. */
 const API = "";
-const REFRESH_MS = 60000;    // el client demana busos a la Raspa cada 1 min
+const REFRESH_MS = 120000;   // refresc de seguretat; el normal el dispara vigilaServidor
+const VIGILA_MS = 5000;      // cada quant es pregunta si hi ha pasada nova
 const ANIM_MS = 500;         // pas d'animació (reorientació de fletxes en zoom/pan)
 const MATCH_MAX_M = 3000;    // radi per reidentificar un bus entre pulls
 const MOVE_MIN_MS = 0.7;     // velocitat mínima (m/s) per pintar-lo "en marxa"
@@ -25,10 +27,13 @@ function colorLinea(linea) {
 const map = L.map("map", { zoomControl: false, attributionControl: false })
   .setView([39.47, -0.376], 13);
 L.control.zoom({ position: "bottomleft" }).addTo(map);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png",
-  { maxZoom: 20, subdomains: "abcd" }).addTo(map);
-L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png",
-  { maxZoom: 20, subdomains: "abcd", opacity: 0.7 }).addTo(map);
+// Fons fosc d'Esri (sense clau). CARTO (basemaps.cartocdn.com) des de nov. 2026 demana
+// API key i torna una tessel·la "API KEY REQUIRED".
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/";
+L.tileLayer(ESRI + "World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+  { maxZoom: 20, maxNativeZoom: 16 }).addTo(map);
+L.tileLayer(ESRI + "World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}",
+  { maxZoom: 20, maxNativeZoom: 16, opacity: 0.7 }).addTo(map);
 
 const busLayer = L.layerGroup().addTo(map);
 const buses = [];                  // estat viu de cada bus
@@ -44,6 +49,23 @@ const CELL = 0.0006;                // ~55 m (cel·la per a l'enganxe)
 const cellK = (p) => Math.round(p[0] / CELL) + "|" + Math.round(p[1] / CELL);
 const nodeK = (p) => p[0].toFixed(5) + "," + p[1].toFixed(5);   // ~1 m (extrems de tram)
 let ultimoTs = 0, ultimoPts = 0, edadSeg = 0;
+const marcadorsParada = new Map();  // id de parada -> circleMarker
+const parades = new Map();          // id de parada -> parada
+
+// Enllaços directes. La barra d'adreces segueix el popup obert.
+const URL_PUBLICA = "https://bus.pr1.es/";
+const BASE = location.pathname.replace(/[^/]*$/, "");          // "/" o "/bus/" (LAN)
+let ENLLAC_INICIAL = "";
+try { ENLLAC_INICIAL = decodeURIComponent(location.pathname.slice(BASE.length)).toLowerCase(); } catch (e) { /* camí mal format */ }
+let enllacActiu = "";
+function posaEnllac(cami) {
+  if (window.historiaActiva && window.historiaActiva() && !/^\d+$/.test(cami)) return;
+  enllacActiu = cami;
+  try { history.replaceState(null, "", BASE + cami + location.search + location.hash); } catch (e) { /* file:// */ }
+}
+function llevaEnllac(cami) { if (enllacActiu === cami) posaEnllac(""); }
+window.posaEnllac = posaEnllac;
+window.llevaEnllac = llevaEnllac;
 
 function indexarRuta(code, rawPaths) {
   const paths = [], grid = new Map(), nodes = new Map();
@@ -188,12 +210,11 @@ function dibujarParadas(stops) {
       radius: 3, color: "#0d0d12", weight: 1,
       fillColor: "#e8e8ef", fillOpacity: 0.9,
     });
-    m.bindPopup(() => {
-      const chips = (s.lineas || [])
-        .map((l) => `<span class="pop-linea" style="background:${colorLinea(l)}">${l}</span>`).join("");
-      return `<div class="pop-parada">🚏 ${s.nom || "Parada"}</div><div class="pop-parada-lin">${chips}</div>`;
-    });
+    m.parada = s;
+    m.on("click", () => obrirPopupParada(s));
     m.addTo(stopsLayer);
+    marcadorsParada.set(s.id, m);
+    parades.set(s.id, s);
   }
   actualizarParadas();
 }
@@ -220,14 +241,49 @@ function iconoBus(color) {
     iconSize: [22, 22], iconAnchor: [11, 11],
   });
 }
-function popupBus(b) {
-  const c = colorLinea(b.linea);
-  const edat = b.fecha ? `<div class="pop-edat">GPS fa ${fmtEdat(b.fecha)}</div>` : "";
-  return `<span class="pop-linea" style="background:${c}">${b.linea}</span>` +
-    `<span class="pop-tray">${b.trayecto || ""}</span>${edat}`;
+const chipLinia = (l) => `<span class="pop-linea" style="background:${colorLinea(l)}">${l}</span>`;
+// popup d'un bus: un element per marcador, amb pestanyes (es refresca sense refer-lo)
+function contBus(e) {
+  if (e.cont && e.cont.dataset.id === String(e.id)) return e.cont;
+  const cont = document.createElement("div");
+  cont.className = "pop-bus";
+  cont.dataset.id = String(e.id);
+  cont.innerHTML = `<div class="pop-bus-cap"></div>`;
+  cont.appendChild(ferPestanyes([
+    { clau: "ara", titol: "Ara", html: `<div class="pop-bus-ara"></div>` },
+    { clau: "reg", titol: "Registre", html: `<div class="pop-reg-llista" data-clau="bus:${e.id}">carregant…</div>` },
+    { clau: "xat", titol: "Xat", html: `<div class="pop-xat" data-tipus="bus" data-lloc="${e.id}"></div>` },
+  ], (clau, panell) => {
+    if (clau === "reg") omplirRegistre(panell.querySelector(".pop-reg-llista"));
+    if (clau === "xat") ompleXat(panell);
+    if (e.cont === cont && e.marker.isPopupOpen()) mantinVisible(cont);
+  }));
+  e.cont = cont;
+  actualitzaContBus(e);
+  return cont;
 }
+function actualitzaContBus(e) {
+  const cont = e.cont;
+  if (!cont) return;
+  const cap = cont.querySelector(".pop-bus-cap");
+  cap.innerHTML = capCompartir(`${chipLinia(e.linea)}<span class="pop-tray">${e.trayecto || ""}</span>` +
+    ` <span class="pop-id">#${e.id}</span>`, String(e.id), `el bus ${e.linea} #${e.id}`, "pop-bus-nom");
+  lligaCompartir(cap);
+  const vel = e.speed >= MOVE_MIN_MS ? `${Math.round(e.speed * 3.6)} km/h` : "parat";
+  cont.querySelector(".pop-bus-ara").innerHTML =
+    `<div>${vel}${e.fecha ? ` · <span class="pop-edat">GPS fa <span class="c-edat">${fmtEdat(e.fecha)}</span></span>` : ""}</div>` +
+    `<button type="button" class="pop-boto" data-hist="${e.id}">Recorregut d'avui</button>`;
+  const hb = cont.querySelector("[data-hist]");
+  if (hb) hb.onclick = () => { map.closePopup(); if (window.historiaBus) window.historiaBus(e.id); };
+  const x = cont.querySelector(".pop-xat");
+  if (x) x.dataset.nom = `${e.linea} · ${e.trayecto || ""}`;
+  if (pestanyaActiva(cont) === "reg") omplirRegistre(cont.querySelector(".pop-reg-llista"));
+}
+// el `fecha` del geoportal no és un epoch UTC fiable (ve ~1-2 h avançat): l'edat es
+// mesura respecte al GPS més fresc de la pasada, que es pren com «ara» del servidor
+let maxFechaMs = 0, maxFechaRebut = 0;
 function fmtEdat(fechaMs) {
-  const s = Math.max(0, Math.floor(nowSec()) - Math.floor(fechaMs / 1000));
+  const s = Math.max(0, Math.round((maxFechaMs - fechaMs) / 1000 + (Date.now() - maxFechaRebut) / 1000));
   if (s < 60) return `${s} s`;
   const m = Math.floor(s / 60);
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
@@ -241,6 +297,7 @@ function actualizarBuses(data, edad) {
   // immune al rellotge, a la zona horària i al DST (el `fecha` del geoportal ve
   // ~2h avançat). El bus més fresc -> gps_age 0; els altres, positiu.
   const maxFecha = busos.reduce((m, x) => Math.max(m, x.fecha || 0), 0);
+  maxFechaMs = maxFecha; maxFechaRebut = Date.now() - edad * 1000;
 
   for (const e of buses) e.usado = false;
   const nuevos = [];
@@ -287,24 +344,35 @@ function actualizarBuses(data, edad) {
       if (speed > MAX_SPEED_MS) speed = 0;
     }
 
-    // reidentifica amb un marcador existent (mateixa línia+sentit, més pròxim)
-    let best = null, bestD = MATCH_MAX_M;
-    for (const e of buses) {
-      if (e.usado || e.linea !== b.linea || e.trayecto !== b.trayecto) continue;
-      const d = distM(e.anchor, anchor);
-      if (d < bestD) { bestD = d; best = e; }
+    // el mateix bus: pel seu número (el dona el servidor); si no, el més pròxim
+    let best = buses.find((e) => !e.usado && e.id === b.id) || null;
+    if (!best) {
+      let bestD = MATCH_MAX_M;
+      for (const e of buses) {
+        if (e.usado || e.linea !== b.linea || e.trayecto !== b.trayecto) continue;
+        const d = distM(e.anchor, anchor);
+        if (d < bestD) { bestD = d; best = e; }
+      }
     }
     if (best) {
       best.usado = true;
-      best.anchor = anchor; best.vel = vel; best.speed = speed; best.sim = sim;
-      best.fecha = b.fecha; best.trayecto = b.trayecto;
-      best.marker.setPopupContent(popupBus(b));
+      const altre = best.id !== b.id;
+      if (best.linea !== b.linea) best.marker.setIcon(iconoBus(colorLinea(b.linea)));
+      Object.assign(best, { id: b.id, linea: b.linea, anchor, vel, speed, sim, fecha: b.fecha, trayecto: b.trayecto });
+      if (best.marker.isPopupOpen()) {
+        if (altre) { best.cont = null; best.marker.getPopup().update(); posaEnllac(String(b.id)); }
+        else actualitzaContBus(best);
+      }
     } else {
-      const marker = L.marker(sim ? pointAt(RG[b.linea].paths[sim.pi], sim.arc).pt : anchor,
-        { icon: iconoBus(colorLinea(b.linea)) }).bindPopup(popupBus(b));
-      marker.addTo(busLayer);
-      nuevos.push({ marker, linea: b.linea, trayecto: b.trayecto, anchor, vel,
-        speed, sim, fecha: b.fecha, usado: true });
+      const e = { id: b.id, linea: b.linea, trayecto: b.trayecto, anchor, vel,
+        speed, sim, fecha: b.fecha, usado: true, cont: null };
+      e.marker = L.marker(sim ? pointAt(RG[b.linea].paths[sim.pi], sim.arc).pt : anchor,
+        { icon: iconoBus(colorLinea(b.linea)) })
+        .bindPopup(() => contBus(e), { minWidth: 260, maxWidth: 280 });
+      e.marker.on("popupopen", () => { actualitzaContBus(e); seleccionat(e.marker, true); posaEnllac(String(e.id)); });
+      e.marker.on("popupclose", () => { seleccionat(e.marker, false); llevaEnllac(String(e.id)); });
+      e.marker.addTo(busLayer);
+      nuevos.push(e);
     }
   }
   // esborra òrfens
@@ -375,7 +443,10 @@ function construirLeyenda() {
 }
 
 /* ---------- refresc de dades ---------- */
+let refrescant = false;
 async function refrescar() {
+  if (refrescant) return;
+  refrescant = true;
   try {
     const data = await (await fetch(API + "api/buses?_=" + Date.now(), { cache: "no-store" })).json();
     edadSeg = data.edad_seg == null ? 0 : data.edad_seg;
@@ -394,12 +465,28 @@ async function refrescar() {
     document.getElementById("stats").innerHTML =
       `<b>${(data.busos || []).length}</b> busos en directe<br>dades fa <b>${edad}</b>${filtro}`;
   } catch (e) {
-    document.getElementById("stats").textContent = "sense connexió amb el backend";
+    document.getElementById("stats").textContent = "sense connexió amb el servidor";
+  } finally {
+    refrescant = false;
   }
+}
+
+// pasada nova al servidor? (i missatges nous del xat)
+async function vigilaServidor() {
+  try {
+    const u = await (await fetch(API + "api/ultimo?_=" + Date.now(), { cache: "no-store" })).json();
+    if (u.ts && u.ts !== ultimoTs) await refrescar();
+    if (window.xatNovetats) window.xatNovetats(u.xat || 0);
+  } catch (e) { /* sense xarxa: ja es reintentarà */ }
 }
 
 function tickSegon() {
   document.getElementById("reloj").textContent = new Date().toLocaleTimeString("ca-ES");
+  for (const e of buses) {
+    if (!e.cont || !e.marker.isPopupOpen()) continue;
+    const el = e.cont.querySelector(".c-edat");
+    if (el && e.fecha) el.textContent = fmtEdat(e.fecha);
+  }
 }
 
 // parades: mostra/amaga segons zoom i checkbox
@@ -418,8 +505,199 @@ document.getElementById("paradas-chk").addEventListener("change", actualizarPara
 (async function main() {
   await cargarRed();
   await refrescar();
+  if (window.iniciaXat) window.iniciaXat();
+  obrirEnllac(ENLLAC_INICIAL);
   setInterval(refrescar, REFRESH_MS);
+  setInterval(vigilaServidor, VIGILA_MS);
   setInterval(animar, ANIM_MS);
   setInterval(tickSegon, 1000);
   tickSegon();
 })();
+
+
+/* ---------- selecció, enllaços i pestanyes (portat de MetroViu) ---------- */
+// El que té el popup obert deixa passar els clics: un segon clic al mateix lloc
+// arriba al que hi ha darrere (p. ex. la parada tapada per un bus).
+function seleccionat(layer, si) {
+  const el = layer && layer.getElement ? layer.getElement() : null;
+  if (el) el.style.pointerEvents = si ? "none" : "";
+}
+const ICONA_COMPARTIR = '<svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true" fill="none" ' +
+  'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/>' +
+  '<line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>';
+// capçalera d'un popup: el nom i la icona de compartir; tots dos copien l'enllaç
+function capCompartir(contingut, cami, etiqueta, classe = "") {
+  return `<div class="pop-cap"><button type="button" class="pop-nom ${classe}" data-enllac="${cami}" ` +
+    `title="Copia l'enllaç">${contingut}</button>` +
+    `<button type="button" class="pop-share" data-enllac="${cami}" title="Copia l'enllaç" ` +
+    `aria-label="Copia l'enllaç a ${etiqueta}">${ICONA_COMPARTIR}</button></div>`;
+}
+function lligaCompartir(el) {
+  el.querySelectorAll("[data-enllac]").forEach((b) => { b.onclick = () => copiaEnllac(b.dataset.enllac); });
+}
+async function copiaEnllac(cami) {
+  const url = URL_PUBLICA + cami;
+  let ok = false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(url); ok = true; }
+  } catch (e) { /* sense permís: l'altra via */ }
+  if (!ok) {   // per http (LAN) el porta-retalls modern no hi és
+    const ta = document.createElement("textarea");
+    ta.value = url; ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    ta.remove();
+  }
+  avisCurt(ok ? `Enllaç copiat · ${url.replace(/^https?:\/\//, "")}` : `Copia l'enllaç: ${url}`, ok ? 2600 : 8000);
+}
+function avisCurt(text, ms = 2600) {
+  let el = document.getElementById("avis-curt");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "avis-curt"; el.setAttribute("role", "status"); el.setAttribute("aria-live", "polite");
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  el.classList.add("on");
+  clearTimeout(avisCurt.t);
+  avisCurt.t = setTimeout(() => el.classList.remove("on"), ms);
+}
+window.avisCurt = avisCurt;
+window.capCompartir = capCompartir;
+window.lligaCompartir = lligaCompartir;
+// Pestanyes d'un popup: [{clau, titol, html}]; `obri(clau, panell)` en triar-ne una
+function ferPestanyes(pestanyes, obri) {
+  const w = document.createElement("div");
+  w.className = "pop-tabs";
+  w.innerHTML = `<div class="pop-tab-barra" role="tablist">` +
+    pestanyes.map((p) => `<button type="button" role="tab" class="pop-tab" data-clau="${p.clau}">${p.titol}</button>`).join("") +
+    `</div>` +
+    pestanyes.map((p) => `<div class="pop-tab-panell" role="tabpanel" data-clau="${p.clau}" hidden>${p.html}</div>`).join("");
+  w.tria = (clau) => {
+    w.dataset.activa = clau;
+    w.querySelectorAll(".pop-tab").forEach((b) => {
+      const on = b.dataset.clau === clau;
+      b.classList.toggle("on", on);
+      b.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    w.querySelectorAll(".pop-tab-panell").forEach((p) => { p.hidden = p.dataset.clau !== clau; });
+    obri(clau, w.querySelector(`.pop-tab-panell[data-clau="${clau}"]`));
+  };
+  w.querySelectorAll(".pop-tab").forEach((b) => { b.onclick = () => w.tria(b.dataset.clau); });
+  w.tria(pestanyes[0].clau);
+  return w;
+}
+const pestanyaActiva = (cont) => (cont && cont.querySelector(".pop-tabs")?.dataset.activa) || null;
+function ompleXat(panell) {
+  const x = panell && panell.querySelector(".pop-xat");
+  if (!x || !window.xatOmpliPopup) return;
+  delete x.dataset.ple;
+  Promise.resolve(window.xatOmpliPopup(panell)).then(() => mantinVisible(panell));
+}
+// El popup creix quan canvia de pestanya o arriba el contingut; Leaflet només el
+// reajusta en obrir-lo. Si ara ix de la pantalla, es mou el mapa.
+function mantinVisible(dins) {
+  const el = dins && dins.closest ? dins.closest(".leaflet-popup") : null;
+  if (!el) return;
+  const r = el.getBoundingClientRect(), m = map.getContainer().getBoundingClientRect();
+  const MARGE = 14;
+  let dx = 0, dy = 0;
+  if (r.top < m.top + MARGE) dy = r.top - (m.top + MARGE);
+  else if (r.bottom > m.bottom - MARGE) dy = Math.min(r.bottom - (m.bottom - MARGE), r.top - (m.top + MARGE));
+  if (r.left < m.left + MARGE) dx = r.left - (m.left + MARGE);
+  else if (r.right > m.right - MARGE) dx = r.right - (m.right - MARGE);
+  if (dx || dy) map.panBy([dx, dy], { animate: true, duration: 0.25 });
+}
+
+/* ---------- popup de parada ---------- */
+let popupParada = null;
+function obrirPopupParada(s) {
+  const m = marcadorsParada.get(s.id);
+  const cont = document.createElement("div");
+  cont.className = "pop-parada-cont";
+  cont.innerHTML = capCompartir(esc(s.nom || "Parada"), s.enllac, esc(s.nom || "la parada"), "pop-par-nom") +
+    `<div class="pop-parada-lin">${(s.lineas || []).map(chipLinia).join("")}` +
+    `<span class="pop-mut">parada ${s.id}</span></div>`;
+  lligaCompartir(cont);
+  let obert = null;
+  cont.appendChild(ferPestanyes([
+    { clau: "reg", titol: "Registre", html: `<div class="pop-reg-llista" data-clau="parada:${s.id}">carregant…</div>` },
+    { clau: "xat", titol: "Xat", html: `<div class="pop-xat" data-tipus="parada" data-lloc="${s.id}" data-nom="${esc(s.nom)}"></div>` },
+  ], (clau, panell) => {
+    if (clau === "reg") omplirRegistre(panell.querySelector(".pop-reg-llista"));
+    if (clau === "xat") ompleXat(panell);
+    if (obert) mantinVisible(cont);
+  }));
+  const popup = L.popup({ maxWidth: 290, minWidth: 270 }).setLatLng([s.lat, s.lng]).setContent(cont).openOn(map);
+  obert = { id: s.id, cont, popup };
+  popupParada = obert;
+  posaEnllac(s.enllac);
+  seleccionat(m, true);
+  popup.on("remove", () => {
+    if (popupParada === obert) popupParada = null;
+    seleccionat(m, false);
+    llevaEnllac(s.enllac);
+  });
+}
+
+/* ---------- registres del dia (parada i bus) ---------- */
+const hm = (ts) => new Date(ts * 1000).toLocaleTimeString("ca-ES", { hour: "2-digit", minute: "2-digit" });
+const esc = (t) => String(t ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+window.esc = esc;
+window.hm = hm;
+window.chipLinia = chipLinia;
+async function omplirRegistre(llista) {
+  if (!llista) return;
+  const [tipus, id] = llista.dataset.clau.split(":");
+  let files;
+  try {
+    const url = tipus === "parada" ? `api/registre_parada?id=${id}` : `api/registre_bus?id=${id}`;
+    files = (await (await fetch(API + url + "&_=" + Date.now(), { cache: "no-store" })).json()).passos || [];
+  } catch (e) { llista.textContent = "sense connexió"; return; }
+  if (!files.length) {
+    llista.innerHTML = `<div class="pop-buida">${tipus === "parada" ? "cap bus registrat hui" : "encara no ha passat per cap parada"}</div>`;
+  } else if (tipus === "parada") {
+    llista.innerHTML = files.slice(0, 120).map((f) =>
+      `<div class="reg-row"><span class="reg-h">${hm(f.ts)}</span>${chipLinia(f.linea)}` +
+      `<span class="reg-nom">${esc(f.trayecto)}</span>` +
+      `<a class="reg-id" href="${BASE}${f.id}" data-bus="${f.id}">#${f.id}</a></div>`).join("");
+    llista.querySelectorAll("[data-bus]").forEach((a) => a.onclick = (ev) => {
+      ev.preventDefault(); map.closePopup(); obrirEnllac(a.dataset.bus);
+    });
+  } else {
+    llista.innerHTML = files.slice().reverse().map((f) =>
+      `<div class="reg-row"><span class="reg-h">${hm(f.ts)}</span>` +
+      `<span class="reg-nom">${esc(f.nom)}</span></div>`).join("");
+  }
+  llista.dataset.pintat = "1";
+  mantinVisible(llista);
+}
+
+// bus.pr1.es/<número> (bus; si ja no circula, el seu recorregut) o /<parada>
+function obrirEnllac(x) {
+  if (!x || !/^[a-z0-9]+$/.test(x)) return;
+  if (/^\d+$/.test(x)) {
+    const id = Number(x);
+    const e = buses.find((e) => e.id === id);
+    if (e) {
+      map.setView(e.marker.getLatLng(), Math.max(map.getZoom(), 16), { animate: false });
+      e.marker.openPopup();
+    } else if (window.historiaBus) window.historiaBus(id);
+    return;
+  }
+  for (const s of parades.values()) {
+    if (s.enllac !== x) continue;
+    map.setView([s.lat, s.lng], Math.max(map.getZoom(), 17), { animate: false });
+    actualizarParadas();
+    obrirPopupParada(s);
+    return;
+  }
+}
+window.obrirEnllac = obrirEnllac;
+// per al xat i el recorregut
+window.marcadorBus = (id) => { const e = buses.find((e) => e.id === id); return e ? e.marker : null; };
+window.marcadorParada = (id) => marcadorsParada.get(Number(id)) || null;
+window.busViu = (id) => buses.some((e) => e.id === id);
+window.busosVius = () => buses.map((e) => ({ id: e.id, linea: e.linea, trayecto: e.trayecto, ll: e.marker.getLatLng() }));

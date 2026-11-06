@@ -1,225 +1,263 @@
 """
-API de EMTropello (FastAPI).
+API de Bus (FastAPI) — busos d'EMT València en directe (abans EMTropello).
 
-Endpoints:
-    GET /api/buses    -> autobuses en vivo del último snapshot
-    GET /api/health   -> estado
-Sirve además el frontend estático de ../web en la raíz.
+    GET  /api/buses            busos de l'última pasada, amb el seu número (id)
+    GET  /api/ultimo           marca de l'última pasada (+ últim id del xat)
+    GET  /api/network          traçat de les línies i parades (amb el seu enllaç)
+    GET  /api/registre_parada  busos que han passat per una parada (?id=&dia=)
+    GET  /api/registre_bus     parades per on ha passat un bus (?id=)
+    GET  /api/historia_bus     recorregut d'un bus encara que ja no circule (?id=)
+    GET  /api/xat              missatges: ?tipus=&lloc= (d'un lloc) o ?des_de=ID (feed)
+    POST /api/xat              publica {tipus, lloc, alias, text}
+    GET  /api/health
 
-Acceso: en RED LOCAL sin token; desde fuera de la LAN exige token (como
-Metroviolencia). Token en data/token.txt (gitignored) o env EMT_TOKEN.
+Les dades les escriu el poller (servei a banda, una pasada per minut); ací només
+es llig. Enllaços directes: bus.pr1.es/<parada> i bus.pr1.es/<número de bus>.
+
+Accés (com MetroViu): en LAN sense token; de fora, token (data/token.txt), llevat
+que data/open_until.txt diga `siempre` o una hora futura.
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
-import math
 import os
 import sqlite3
-import threading
 import time
 from pathlib import Path
 
-import requests
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.convertors import Convertor, register_url_convertor
 
-from . import poller
+from . import historia, passos, poller, xat
 
 ROOT = Path(__file__).resolve().parent.parent
-DB = ROOT / "data" / "emt.db"
+DB = poller.DB
 WEB = ROOT / "web"
 ROUTES_FILE = ROOT / "data" / "routes.json"
 STOPS_FILE = ROOT / "data" / "stops.json"
 TOKEN_FILE = ROOT / "data" / "token.txt"
-OPEN_UNTIL_FILE = ROOT / "data" / "open_until.txt"   # epoch fins al qual l'accés extern
-                                                     # és lliure (sense token); auto-caduca
+OPEN_FILE = ROOT / "data" / "open_until.txt"
 
-app = FastAPI(title="EMTropello", version="0.1")
+MIN_DT_SEC = 40        # la pasada «anterior» per a la velocitat: entre 40 s...
+MAX_DT_SEC = 200       # ... i 200 s abans (si no, velocitat falsa: tot parat)
 
-_NET_CACHE: dict | None = None
-MATCH_MAX_M = 3000     # radi per lligar un bus amb la seua posició de la pasada anterior
-MIN_DT_SEC = 40        # la pasada "anterior" ha de ser >= això d'antiga (si no, el GPS
-                       # d'EMT no ha refrescat i eixiria velocitat 0 -> tot parat)
-MAX_DT_SEC = 200       # ...i <= això. Emparellar amb una pasada MOLT vella (p. ex. dies,
-                       # després d'un buit sense clients) donava dt enorme -> velocitat ~0
-                       # per a TOTS els busos (quiets). Millor pts=null i esperar un parell fresc.
-
-# --- Pull ON-DEMAND: NO hi ha poller de fons. El geoportal només es consulta quan
-# un client demana /api/buses i la caché ha caducat (~1 min). Sense clients, zero
-# consultes. Diversos clients comparteixen la mateixa caché (1 pull/min com a molt).
-CACHE_TTL = 55                          # segons de validesa de la caché (~1 pull/min)
-_fetch_session = requests.Session()
-_fetch_lock = threading.Lock()
-poller.init_db().close()                # assegura les taules (ja no ho fa el poller)
-
-
-def _ensure_fresh() -> None:
-    """Si la última pasada tiene > CACHE_TTL, consulta el geoportal (una sola vez,
-    aunque haya varios clientes) y la guarda. Si no, no hace nada (sirve caché)."""
-    con = _con()
-    try:
-        last = con.execute("SELECT ts FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
-        if last and int(time.time()) - last["ts"] < CACHE_TTL:
-            return
-        if not _fetch_lock.acquire(blocking=False):
-            # otro hilo ya está consultando el geoportal; servimos lo que haya
-            return
-        try:
-            last = con.execute("SELECT ts FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
-            if last and int(time.time()) - last["ts"] < CACHE_TTL:
-                return
-            poller.poll_once(con, _fetch_session)
-        except Exception as e:  # noqa: BLE001 - si el geoportal falla, servimos la última buena
-            print("ensure_fresh error:", e)
-        finally:
-            _fetch_lock.release()
-    finally:
-        con.close()
+app = FastAPI(title="Bus", version="1.0")
+app.add_middleware(GZipMiddleware, minimum_size=2000)
+poller.init_db().close()
 
 
 def _token() -> str:
     if TOKEN_FILE.exists():
         return TOKEN_FILE.read_text(encoding="utf-8").strip()
-    return os.environ.get("EMT_TOKEN", "").strip()
-
-
-def _open_until() -> float:
-    """Epoch fins al qual l'accés extern és lliure (sense token). Si el fitxer no
-    existeix o ja ha passat, torna a exigir-se el token. S'auto-caduca."""
-    try:
-        return float(OPEN_UNTIL_FILE.read_text(encoding="utf-8").strip())
-    except Exception:  # noqa: BLE001
-        return 0.0
+    return os.environ.get("BUS_TOKEN", "").strip()
 
 
 def _is_lan(ip: str) -> bool:
-    return (
-        ip in ("127.0.0.1", "::1", "localhost")
-        or ip.startswith("192.168.")
-        or ip.startswith("10.")
-        or any(ip.startswith(f"172.{n}.") for n in range(16, 32))
-    )
+    return (ip in ("127.0.0.1", "::1", "localhost") or ip.startswith("192.168.")
+            or ip.startswith("10.") or any(ip.startswith(f"172.{n}.") for n in range(16, 32)))
+
+
+def _open_now() -> bool:
+    """Finestra sense token: `siempre` (no caduca) o un epoch futur."""
+    try:
+        v = OPEN_FILE.read_text(encoding="utf-8").strip()
+        return v.lower() == "siempre" or time.time() < float(v)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _client_ip(request: Request) -> str:
-    # Apache (mod_proxy) añade la IP real al final de X-Forwarded-For.
-    xff = request.headers.get("x-forwarded-for", "")
+    xff = request.headers.get("x-forwarded-for", "")   # Apache hi afig la IP real al final
     if xff:
         return xff.split(",")[-1].strip()
     return request.client.host if request.client else ""
 
 
 @app.middleware("http")
-async def auth_token(request: Request, call_next):
+async def acces(request: Request, call_next):
     q = request.query_params.get("token")
-    if _is_lan(_client_ip(request)) or time.time() < _open_until():
-        # LAN sempre lliure; a més, finestra temporal d'accés extern obert (sense
-        # token) mentre no caduque open_until.txt.
+    if _is_lan(_client_ip(request)) or _open_now():
         resp = await call_next(request)
     else:
         token = _token()
-        ok = bool(token) and (q == token or request.cookies.get("emttoken") == token)
+        ok = bool(token) and (q == token or request.cookies.get("bustoken") == token)
         if not ok:
             return JSONResponse({"error": "forbidden"}, status_code=403)
         resp = await call_next(request)
         if q == token:
-            resp.set_cookie("emttoken", token, max_age=31536000,
-                            path="/EMT", httponly=True, samesite="lax")
+            arrel = request.headers.get("x-forwarded-prefix") == "/"   # bus.pr1.es (si no, /bus en LAN)
+            resp.set_cookie("bustoken", token, max_age=31536000, path="/" if arrel else "/bus",
+                            httponly=True, samesite="lax",
+                            secure=request.headers.get("x-forwarded-proto") == "https")
     resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
     resp.headers["Pragma"] = "no-cache"
     return resp
 
 
 def _con() -> sqlite3.Connection:
-    con = sqlite3.connect(DB, timeout=10)
+    con = sqlite3.connect(DB, timeout=15)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")     # lectors i escriptor concurrents
-    con.execute("PRAGMA busy_timeout=10000")
     return con
 
 
-def _cur_prev_snapshots(con):
-    """Última pasada + una pasada anterior de >= MIN_DT_SEC (para que haya
-    desplazamiento real; si no hay suficiente historial, la más antigua)."""
-    snaps = con.execute("SELECT * FROM snapshots ORDER BY id DESC LIMIT 40").fetchall()
-    if not snaps:
-        return None, None
-    cur = snaps[0]
-    prev = None
-    for s in snaps[1:]:
-        gap = cur["ts"] - s["ts"]
-        if gap >= MIN_DT_SEC:
-            if gap <= MAX_DT_SEC:      # el primer prou antic; si també és prou recent, l'usem
-                prev = s
-            break                      # si és massa vell, cap serveix (la resta són més vells)
-    return cur, prev
+_stops: list[dict] | None = None
+_stops_id: dict[int, dict] = {}
 
 
-def _mdist(a_lat, a_lng, b_lat, b_lng) -> float:
-    return math.hypot((a_lat - b_lat) * 111000,
-                      (a_lng - b_lng) * math.cos(a_lat * math.pi / 180) * 111000)
+def _parades() -> list[dict]:
+    global _stops
+    if _stops is None:
+        _stops = json.loads(STOPS_FILE.read_text(encoding="utf-8")) if STOPS_FILE.exists() else []
+        enll = historia.enllacos(_stops)
+        for s in _stops:
+            s["enllac"] = enll[s["id"]]
+            _stops_id[s["id"]] = s
+    return _stops
+
+
+def _rang_dia(dia: str | None) -> tuple[int, int]:
+    d = dt.date.fromisoformat(dia) if dia else dt.date.today()
+    t0 = int(dt.datetime.combine(d, dt.time()).timestamp())
+    return t0, t0 + 86400 - 1
 
 
 @app.get("/api/buses")
 def buses():
-    _ensure_fresh()          # pull on-demand al geoportal si la caché ha caducat
+    from . import lectures
     con = _con()
-    cur, prev = _cur_prev_snapshots(con)
+    cur = con.execute("SELECT id, ts FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
     if not cur:
         return {"ts": None, "pts": None, "n": 0, "busos": []}
-
-    # posiciones de la pasada anterior, agrupadas por (línea, trayecto)
-    prev_by_key: dict = {}
-    if prev:
-        for r in con.execute(
-            "SELECT linea,trayecto,lat,lng FROM buses WHERE snapshot_id=?", (prev["id"],)
-        ):
-            prev_by_key.setdefault((r["linea"], r["trayecto"]), []).append((r["lat"], r["lng"]))
-
+    prev = con.execute("SELECT id, ts FROM snapshots WHERE ts BETWEEN ? AND ? ORDER BY ts DESC LIMIT 1",
+                       (cur["ts"] - MAX_DT_SEC, cur["ts"] - MIN_DT_SEC)).fetchone()
+    abans = {f[0]: f for f in lectures.de_pasada(con, prev["id"])} if prev else {}
     busos = []
-    used: dict = {}   # evita asignar el mismo punto previo a dos buses
-    for r in con.execute(
-        "SELECT gid,linea,trayecto,lat,lng,fecha FROM buses WHERE snapshot_id=?", (cur["id"],)
-    ):
-        plat = plng = None
-        cands = prev_by_key.get((r["linea"], r["trayecto"]))
-        if cands:
-            best_i, best_d = -1, MATCH_MAX_M
-            seen = used.setdefault((r["linea"], r["trayecto"]), set())
-            for i, (la, ln) in enumerate(cands):
-                if i in seen:
-                    continue
-                d = _mdist(r["lat"], r["lng"], la, ln)
-                if d < best_d:
-                    best_d, best_i = d, i
-            if best_i >= 0:
-                seen.add(best_i)
-                plat, plng = cands[best_i]
-        busos.append({"linea": r["linea"], "trayecto": r["trayecto"],
-                      "lat": r["lat"], "lng": r["lng"], "fecha": r["fecha"],
-                      "plat": plat, "plng": plng})
-
+    for f in lectures.de_pasada(con, cur["id"]):
+        p = abans.get(f[0])
+        busos.append({"id": f[0], "linea": f[1], "trayecto": f[2], "lat": f[3], "lng": f[4],
+                      "fecha": f[5], "plat": p[3] if p else None, "plng": p[4] if p else None})
     return {"ts": cur["ts"], "pts": prev["ts"] if prev else None,
             "edad_seg": int(time.time()) - cur["ts"], "n": len(busos), "busos": busos}
 
 
+@app.get("/api/ultimo")
+def ultimo():
+    con = _con()
+    r = con.execute("SELECT ts FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+    return {"ts": r["ts"] if r else None, "xat": xat.ultim_id(con)}
+
+
+_net_cache: dict | None = None
+
+
 @app.get("/api/network")
 def network():
-    global _NET_CACHE
-    if _NET_CACHE is None:
+    global _net_cache
+    if _net_cache is None:
         routes = json.loads(ROUTES_FILE.read_text(encoding="utf-8")) if ROUTES_FILE.exists() else {}
-        stops = json.loads(STOPS_FILE.read_text(encoding="utf-8")) if STOPS_FILE.exists() else []
-        _NET_CACHE = {"routes": routes, "stops": stops}
-    return _NET_CACHE
+        _net_cache = {"routes": routes, "stops": _parades()}
+    return _net_cache
+
+
+@app.get("/api/registre_parada")
+def registre_parada(id: int, dia: str | None = None):
+    _parades()
+    if id not in _stops_id:
+        return JSONResponse({"error": "parada desconeguda"}, status_code=404)
+    t0, t1 = _rang_dia(dia)
+    return {"parada": id, "passos": passos.de_parada(_con(), id, t0, t1)}
+
+
+@app.get("/api/registre_bus")
+def registre_bus(id: int):
+    _parades()
+    ps = passos.de_bus(_con(), [id])
+    for p in ps:
+        s = _stops_id.get(p["parada"])
+        p["nom"] = s["nom"] if s else str(p["parada"])
+        p["enllac"] = s["enllac"] if s else None
+    return {"id": id, "passos": ps}
+
+
+@app.get("/api/historia_bus")
+def historia_bus(id: int):
+    _parades()
+    res = historia.historia(_con(), _stops_id, id)
+    if res is None:
+        return JSONResponse({"error": "no hi ha registre d'eixe bus"}, status_code=404)
+    return res
+
+
+@app.get("/api/xat")
+def xat_get(tipus: str | None = None, lloc: int | None = None, des_de: int | None = None,
+            n: int = 20):
+    con = _con()
+    n = max(1, min(n, xat.MAX_FEED))
+    if tipus and lloc is not None:
+        return {"missatges": xat.del_lloc(con, tipus, lloc, n)}
+    return {"missatges": xat.des_de(con, des_de or 0, n), "ultim_id": xat.ultim_id(con)}
+
+
+@app.post("/api/xat")
+async def xat_post(request: Request):
+    try:
+        j = await request.json()
+    except Exception:  # noqa: BLE001
+        return JSONResponse({"error": "petició invàlida"}, status_code=400)
+    _parades()
+    con = _con()
+    m, err = xat.publicar(con, _stops_id, _client_ip(request), j.get("tipus"), j.get("lloc"),
+                          j.get("alias", ""), j.get("text", ""))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    return m
 
 
 @app.get("/api/health")
 def health():
     con = _con()
-    snap = con.execute("SELECT * FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
-    n = con.execute("SELECT COUNT(*) c FROM snapshots").fetchone()["c"]
-    return {"ok": True, "snapshots": n, "ultimo_ts": snap["ts"] if snap else None}
+    r = con.execute("SELECT ts, n FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
+    return {"ok": True, "ultimo_ts": r["ts"] if r else None, "busos": r["n"] if r else 0,
+            "edad_seg": int(time.time()) - r["ts"] if r else None}
+
+
+# ---------------------------------------------------------------- enllaços
+class _Enllac(Convertor):
+    regex = "[a-z0-9]+"
+
+    def convert(self, value: str) -> str:
+        return value
+
+    def to_string(self, value: str) -> str:
+        return value
+
+
+register_url_convertor("enllac", _Enllac())
+_enllacos: set[str] = set()
+
+
+def _index():
+    return FileResponse(WEB / "index.html")
+
+
+@app.get("/", include_in_schema=False)
+def inici():
+    return _index()
+
+
+@app.get("/{enllac:enllac}", include_in_schema=False)
+def enllac(enllac: str):
+    if (WEB / f"{enllac}.html").is_file():          # una pàgina pròpia amb eixe nom mana
+        return FileResponse(WEB / f"{enllac}.html")
+    if not _enllacos:
+        _enllacos.update(s["enllac"] for s in _parades())
+    if enllac.isdigit() or enllac in _enllacos:
+        return _index()
+    return RedirectResponse("./", status_code=302)
 
 
 if WEB.exists():

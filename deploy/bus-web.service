@@ -1,0 +1,16 @@
+[Unit]
+Description=Bus · API + web (FastAPI/uvicorn), bus.pr1.es
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=roca
+WorkingDirectory=/home/roca/Bus
+# Només localhost: hi arriba Apache (bus.pr1.es, i /bus i /EMT en LAN)
+ExecStart=/home/roca/Bus/.venv/bin/python -m uvicorn backend.api:app --host 127.0.0.1 --port 8791 --root-path /bus
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

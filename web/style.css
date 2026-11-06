@@ -141,3 +141,129 @@ html, body {
 }
 .pop-tray { color: var(--muted); }
 .pop-edat { color: #6f6f80; font-size: 11px; margin-top: 4px; }
+
+/* ---------- Bus (06/11/2026): marca, pestanyes, compartir, xat i recorregut ---------- */
+.titulo .marca { color: var(--viol); letter-spacing: 1.5px; }
+.sub-marca { font-size: 11px; font-weight: 600; color: var(--muted); letter-spacing: 0; }
+.pop-mut, .pop-buida { color: var(--muted); font-size: 11.5px; }
+.pop-parada-lin { align-items: center; }
+.pop-id { color: var(--muted); font-weight: 600; font-size: 12px; }
+.pop-cap { display: flex; align-items: center; gap: 4px; padding-right: 16px; }
+.pop-nom {
+  flex: 1; min-width: 0; text-align: left; background: none; border: 0; padding: 2px 0; margin: 0;
+  color: var(--txt); font: inherit; cursor: pointer; text-decoration: underline dotted transparent;
+  text-underline-offset: 3px;
+}
+.pop-nom:hover { text-decoration-color: var(--viol); }
+.pop-nom:focus-visible, .pop-share:focus-visible, .pop-tab:focus-visible, .hist-tanca:focus-visible {
+  outline: 2px solid var(--viol); outline-offset: 2px; border-radius: 4px;
+}
+.pop-nom.pop-par-nom { font-size: 16px; font-weight: 800; line-height: 1.2; }
+.pop-nom.pop-bus-nom { font-size: 13.5px; font-weight: 700; }
+.pop-share {
+  flex: none; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 7px;
+  background: none; border: 0; color: var(--muted); cursor: pointer;
+}
+.pop-share:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+.pop-tab-barra { display: flex; margin: 8px 0 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+.pop-tab {
+  flex: 1; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted);
+  font: inherit; font-size: 12px; font-weight: 700; padding: 6px 4px; cursor: pointer;
+}
+.pop-tab:hover { color: var(--txt); }
+.pop-tab.on { color: #fff; border-bottom-color: var(--viol); }
+.pop-tab-panell { max-height: 240px; overflow-y: auto; overscroll-behavior: contain; }
+.pop-boto, .hist-seguix {
+  margin-top: 8px; padding: 4px 10px; border-radius: 8px; border: 1px solid var(--viol);
+  background: transparent; color: #fdba74; font: inherit; font-size: 12px; cursor: pointer;
+}
+.pop-boto:hover, .hist-seguix:hover { background: rgba(247, 148, 29, 0.15); }
+.reg-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.05); font-size: 12px; }
+.reg-h { font-variant-numeric: tabular-nums; color: var(--txt); min-width: 38px; }
+.reg-nom { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reg-id { color: #fdba74; text-decoration: none; font-variant-numeric: tabular-nums; }
+.reg-id:hover { text-decoration: underline; }
+.reg-row .pop-linea { margin-right: 0; font-size: 11px; }
+#avis-curt {
+  position: fixed; left: 50%; bottom: 24px; transform: translate(-50%, 12px); z-index: 2000;
+  background: #16161f; color: var(--txt); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 10px;
+  padding: 8px 14px; font-size: 13px; opacity: 0; pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  max-width: calc(100vw - 32px);
+}
+#avis-curt.on { opacity: 1; transform: translate(-50%, 0); }
+
+/* xat */
+.xat-muted { color: var(--muted); font-size: 12px; }
+.pop-xat-llista { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; max-height: 140px; overflow-y: auto; }
+.xat-msg { border-left: 2px solid rgba(255, 255, 255, 0.15); padding: 2px 0 2px 8px; font-size: 12px; }
+.xat-hora { color: var(--muted); font-variant-numeric: tabular-nums; }
+.xat-txt { color: var(--txt); font-size: 13px; white-space: pre-wrap; word-break: break-word; }
+.xat-form { display: grid; grid-template-columns: 1fr auto; gap: 5px; }
+.xat-form input {
+  background: #0f0f16; color: var(--txt); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 7px;
+  padding: 6px 8px; font: inherit; font-size: 12.5px; min-width: 0;
+}
+.xat-form .xat-alias { grid-column: 1 / span 2; }
+.xat-form button {
+  background: var(--viol); color: #000; border: 0; border-radius: 7px; padding: 0 12px;
+  font: inherit; font-weight: 700; font-size: 12.5px; cursor: pointer;
+}
+.xat-form button:disabled { opacity: 0.5; }
+.xat-avis { grid-column: 1 / span 2; color: #f87171; font-size: 11.5px; min-height: 14px; }
+.xat-avis.suau { color: var(--muted); }
+.leaflet-tooltip.xat-bombolla {
+  background: #16161f; color: var(--txt); border: 1px solid var(--viol); border-radius: 10px;
+  padding: 6px 10px; max-width: 240px; white-space: normal; font-size: 12.5px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+}
+.leaflet-tooltip.xat-bombolla::before { border-top-color: var(--viol); }
+
+/* recorregut d'un bus */
+body.mode-historia .leaflet-marker-pane .leaflet-marker-icon:not(.hist-icona) { opacity: 0.2; }
+#hist-panell {
+  position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 1100; width: 360px;
+  max-width: calc(100vw - 32px); background: var(--panel); backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 12px; padding: 10px 12px;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55); font-size: 13px;
+}
+.hist-cap { display: flex; align-items: center; gap: 4px; }
+.hist-cap .pop-cap { flex: 1; min-width: 0; padding-right: 0; }
+.hist-tanca {
+  flex: none; width: 28px; height: 28px; border-radius: 7px; border: 0; background: none;
+  color: var(--muted); font-size: 20px; line-height: 1; cursor: pointer;
+}
+.hist-tanca:hover { color: #fff; background: rgba(255, 255, 255, 0.08); }
+.hist-sub { margin: 4px 0 6px; display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.hist-estat { font-weight: 700; }
+.hist-estat.viu { color: #38bdf8; }
+.hist-estat.fi { color: #fca5a5; }
+.hist-mut { color: var(--muted); }
+.hist-ctrl { display: flex; align-items: center; gap: 8px; }
+.hist-ctrl button, .hist-ctrl select {
+  background: #0f0f16; color: var(--txt); border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 7px;
+  padding: 3px 8px; font: inherit; font-size: 12.5px; cursor: pointer;
+}
+#hist-hora { font-weight: 800; font-variant-numeric: tabular-nums; min-width: 64px; }
+#hist-pos { flex: 1; min-width: 0; accent-color: var(--viol); }
+.hist-ret { margin-top: 6px; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.hist-llista { margin-top: 6px; }
+.hist-llista summary {
+  cursor: pointer; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.5px;
+  color: #8a8a98; font-weight: 700; padding: 3px 0;
+}
+.hist-llista .pop-reg-llista { max-height: 200px; overflow-y: auto; }
+.hist-bus {
+  display: block; width: 16px; height: 16px; border-radius: 50%; border: 2px solid #fff;
+  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.35);
+}
+.hist-fi {
+  width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+  font-weight: 900; font-size: 12px; color: #fff; border: 2px solid #fff;
+}
+.hist-fi.fi { background: #b91c1c; box-shadow: 0 0 0 4px rgba(185, 28, 28, 0.35); }
+.hist-fi.viu { background: #0284c7; }
+.leaflet-tooltip.hist-tt { background: #16161f; color: var(--txt); border: 1px solid rgba(255, 255, 255, 0.2); }
+@media (max-width: 600px) {
+  #hist-panell { top: auto; bottom: 12px; left: 16px; right: 16px; transform: none; width: auto; }
+}

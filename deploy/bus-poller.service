@@ -1,0 +1,15 @@
+[Unit]
+Description=Bus · poller del geoportal d'EMT València (una pasada per minut)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=roca
+WorkingDirectory=/home/roca/Bus
+ExecStart=/home/roca/Bus/.venv/bin/python -u -m backend.poller
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

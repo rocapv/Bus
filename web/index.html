@@ -3,9 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-  <title>EMTropello · busos en directe · EMT València</title>
+  <title>Bus · busos d'EMT València en directe</title>
+  <meta name="description" content="Els autobusos d'EMT València en directe, amb la seua posició GPS, el registre de cada parada i el recorregut de cada bus.">
+  <meta name="theme-color" content="#0d0d12">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=202611060700">
 </head>
 <body>
   <div id="map"></div>
@@ -14,7 +16,7 @@
     <button id="hud-toggle" title="Amaga/mostra el panell" aria-label="Amaga el panell">«</button>
     <div id="hud-body">
       <div class="titulo">
-        <span class="dot-live"></span><span class="marca">EMT<span class="viol">ROPELLO</span></span>
+        <span class="dot-live"></span><span class="marca">BUS</span><span class="sub-marca">EMT València</span>
       </div>
       <div id="stats">carregant…</div>
       <label id="paradas-tog"><input type="checkbox" id="paradas-chk" checked> mostra les parades</label>
@@ -27,6 +29,8 @@
   <div id="reloj"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=202611060700"></script>
+  <script src="xat.js?v=202611060700"></script>
+  <script src="historia.js?v=202611060700"></script>
 </body>
 </html>

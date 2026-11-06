@@ -1,59 +1,84 @@
-# EMTropello · busos d'EMT València en directe
+# Bus · busos d'EMT València en directe
 
-Visualitza en temps real els autobusos de l'**EMT de València** com a punts/fletxes
-que es mouen sobre un mapa Leaflet fosc. Les posicions són **GPS reals** (no estimades):
-es prenen de la capa de seguiment en viu del geoportal municipal.
-
-![live](https://img.shields.io/badge/dades-en%20directe-35d07f)
+**https://bus.pr1.es/** — els autobusos de l'EMT de València sobre el mapa, amb la
+seua posició **GPS real**, el registre de pas de cada parada, el recorregut de
+cada bus i un xat per bus i per parada. Abans es deia EMTropello; el 06/11/2026
+va passar a dir-se **Bus** i va heretar el que es va aprendre a
+[MetroViu](https://metro.pr1.es/).
 
 ## Font de dades
 
-ArcGIS MapServer públic (sense token) del geoportal de l'Ajuntament de València:
+ArcGIS MapServer públic (sense token) del geoportal de l'Ajuntament:
 
 ```
 https://geoportal.valencia.es/server/rest/services/EMT/Seguimiento_EMT/MapServer
 ```
 
-- **Capa 384 · «Buses EMT»** (punts) — un registre per autobús en circulació. Camps:
-  - `linea` — codi de línia comercial (`72`, `C1`, `N1`, …)
-  - `trayecto` — sentit (`Est.del Nord - Sant Isidre`)
-  - `fecha` — última actualització GPS del vehicle (epoch ms)
-- La geometria nativa és **EPSG:25830** (UTM 30N); demanem `outSR=4326` i el servidor
-  la reprojecta a lon/lat WGS84 → no cal `pyproj`.
-- Hi ha ~300 busos en directe i ~40 línies segons l'hora.
-- ⚠️ El camp `gid` (ObjectID) **no és estable** entre consultes: es reassigna a cada
-  refresc. Per això la identitat de cada bus es reconstrueix al frontend per
-  proximitat (mateixa línia + sentit → marcador més pròxim), no per `gid`.
+- **Capa 384 · «Buses EMT»**: un registre per bus en circulació, amb `linea`,
+  `trayecto` (sentit) i `fecha` (última posició GPS). Es demana `outSR=4326`.
+- ⚠️ El `gid` **no és estable** (es reassigna a cada consulta) i el `fecha` no és
+  un epoch UTC fiable (ve avançat). La identitat la posa el servidor (vegeu baix)
+  i l'antiguitat del GPS es mesura respecte al bus més fresc de la pasada.
+- ~300 busos en hora punta, ~40 línies.
 
-## Arquitectura
+## Com funciona
 
-- `backend/arcgis.py` — client de la capa 384 (retorna `Bus(linea, trayecto, lat, lng, fecha)`).
-- `backend/poller.py` — sondeja cada **15 s** i persisteix a SQLite `data/emt.db`
-  (`snapshots` + `buses`); poda a les últimes 40 pasades.
-- `backend/api.py` — FastAPI: `GET /api/buses` (últim snapshot) i `/api/health`;
-  serveix el frontend estàtic de `web/`. Accés lliure en LAN, token fora de la LAN.
-- `web/` — Leaflet (CartoDB dark). Cada bus és una **fletxa** girada al rumb del seu
-  desplaçament real, o un **punt** si porta ~50 s parat (parada/capçalera). El marcador
-  llisca cap a la nova posició entre pasades. Llegenda de línies amb toggle.
+- **`backend/poller.py`** (servei `bus-poller`): una pasada per minut, sempre (abans
+  només quan algú mirava). Descarta les pasades parcials del geoportal.
+- **`backend/seguiment.py`**: cada bus rep un **número** que conserva tot el torn.
+  Mateixa línia, el més pròxim dins d'una porta de distància segons el temps; en
+  capçalera canvia de sentit però és el mateix bus; un bus perdut fins a 15 min es
+  retroba.
+- **`backend/lectures.py`**: cada pasada és una fila (blob zlib): ~7 MB per dia.
+- **`backend/passos.py`**: entre dues lectures el bus recorre un tram; les parades
+  de la seua línia a menys de 30 m del tram, i a la dreta del sentit de marxa
+  (la de l'altre sentit és a l'esquerra), compten com a pas.
+- **`backend/historia.py`**: el recorregut d'un bus (totes les posicions del torn) i
+  els enllaços de les parades.
+- **`backend/xat.py`**: missatges per bus o per parada, sense comptes, 7 dies.
+- **`backend/api.py`** (servei `bus-web`, uvicorn a 127.0.0.1:8791).
+- Base de dades `data/bus.db` en **WAL**, `secure_delete=OFF` i **7 dies** de tot
+  (purga de matinada, `auto_vacuum` incremental).
 
-Com el GPS d'EMT refresca cada ~20-30 s (més que el nostre refresc), un bus conserva
-el seu rumb entre actualitzacions i només passa a punt després d'estar realment aturat.
+| Endpoint | Paràmetres | Què |
+|---|---|---|
+| `GET /api/buses` | | busos de l'última pasada, amb el seu número |
+| `GET /api/ultimo` | | marca de l'última pasada (+ últim missatge del xat) |
+| `GET /api/network` | | traçat de les línies i parades (amb el seu enllaç) |
+| `GET /api/registre_parada` | `id`, `dia` | busos que han passat per la parada |
+| `GET /api/registre_bus` | `id` | parades per on ha passat el bus |
+| `GET /api/historia_bus` | `id` | recorregut del bus, encara que ja no circule |
+| `GET/POST /api/xat` | `tipus`, `lloc` / `des_de` | missatges |
 
-## Ús local
+## La web
 
-```bash
-python -m venv .venv && .venv/Scripts/pip install -r requirements.txt
-python -m backend.poller --once          # una passada de prova
-python -m backend.poller                 # bucle continu (15 s)
-python -m uvicorn backend.api:app --port 8791
-# obri http://127.0.0.1:8791/
-```
+- Cada bus avança **al llarg de la seua ruta** entre una dada i la següent i es
+  reajusta quan n'arriba una de nova (la web pregunta cada 5 s si n'hi ha).
+- **Enllaços directes**: `bus.pr1.es/torresdelsserrans` (parada: nom en minúscules
+  sense accents ni símbols; si dues parades es diuen igual, s'hi afig el número:
+  `portadelamar771`) i `bus.pr1.es/1234` (bus; si ja no circula, el seu
+  recorregut). El nom del popup o la icona de compartir copien l'enllaç.
+- **Popups amb pestanyes**: parada (Registre · Xat) i bus (Ara · Registre · Xat).
+- **Recorregut**: el torn del bus reproduït amb el rellotge accelerat, el traç, les
+  parades per on va passar i on es va deixar de veure.
 
 ## Desplegament (Raspa)
 
-Dos serveis systemd (`deploy/emtropello-poller.service`, sondeig cada **5 min** +
-`emtropello-web.service`) i un `conf` d'Apache (`deploy/apache-emtropello.conf`) que
-fa de proxy invers a `127.0.0.1:8791` **només per a la LAN** → `http://192.168.1.100/EMT/`.
-El client (navegador) demana dades a la Raspa cada **1 min**.
+```
+git clone git@github.com:rocapv/Bus.git ~/Bus && cd ~/Bus
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+sudo cp deploy/bus-poller.service deploy/bus-web.service /etc/systemd/system/
+sudo systemctl enable --now bus-poller bus-web
+sudo cp deploy/apache-bus.conf /etc/apache2/conf-available/bus.conf && sudo a2enconf bus
+# domini: deploy/bus.pr1.es.conf i deploy/bus.pr1.es-ssl.conf (certbot --webroot)
+```
 
-UI en valencià. Dades © Ajuntament de València (geoportal obert). Projecte no oficial.
+- `data/token.txt`: token d'accés de fora de la LAN. `data/open_until.txt`
+  = `siempre` deixa la web oberta a tothom (com metro.pr1.es).
+- En LAN: `http://192.168.1.100/bus/`. `/EMT/` es manté per a l'APK vella.
+
+## Tests
+
+```
+python -m pytest -q tests
+```

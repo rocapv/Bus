@@ -8,3 +8,4 @@ data/*.log
 data/token.txt
 apk/build/
 data/open_until.txt
+data/ultima_purga.txt
