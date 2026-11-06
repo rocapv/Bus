@@ -9,6 +9,7 @@ API de Bus (FastAPI) — busos d'EMT València en directe (abans EMTropello).
     GET  /api/historia_bus     recorregut d'un bus encara que ja no circule (?id=)
     GET  /api/xat              missatges: ?tipus=&lloc= (d'un lloc) o ?des_de=ID (feed)
     POST /api/xat              publica {tipus, lloc, alias, text}
+    GET  /api/intermodal       ruta combinada metro + bus entre dos punts (?o=lat,lng&d=lat,lng)
     GET  /api/health
 
 Les dades les escriu el poller (servei a banda, una pasada per minut); ací només
@@ -32,7 +33,7 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.convertors import Convertor, register_url_convertor
 
-from . import historia, passos, poller, xat
+from . import historia, intermodal, passos, poller, xat
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = poller.DB
@@ -142,6 +143,58 @@ def buses():
                       "fecha": f[5], "plat": p[3] if p else None, "plng": p[4] if p else None})
     return {"ts": cur["ts"], "pts": prev["ts"] if prev else None,
             "edad_seg": int(time.time()) - cur["ts"], "n": len(busos), "busos": busos}
+
+
+def _punt(txt: str) -> tuple[float, float] | None:
+    try:
+        lat, lng = (float(x) for x in txt.split(","))
+    except Exception:  # noqa: BLE001
+        return None
+    # àrea metropolitana de València (marge ample): fora d'ací no hi ha ni metro ni EMT
+    return (lat, lng) if 39.0 < lat < 40.0 and -1.0 < lng < 0.0 else None
+
+
+_servei_cache: tuple[float, set[str] | None] = (0.0, None)
+
+
+def _linies_en_servei(finestra: int = 1800) -> set[str] | None:
+    """Línies amb algun bus en les pasades dels últims 30 min (una pasada sola en
+    porta de vegades la meitat). None si el poller no té dades recents."""
+    global _servei_cache
+    if time.time() - _servei_cache[0] < 120:
+        return _servei_cache[1]
+    from . import lectures
+    out: set[str] | None = None
+    try:
+        con = _con()
+        ids = [r["id"] for r in con.execute("SELECT id FROM snapshots WHERE ts >= ? ORDER BY id",
+                                            (int(time.time()) - finestra,))]
+        if len(ids) >= 5:
+            out = set()
+            for i in ids:
+                out.update(f[1] for f in lectures.de_pasada(con, i))
+        con.close()
+    except Exception:  # noqa: BLE001
+        out = None
+    _servei_cache = (time.time(), out)
+    return out
+
+
+@app.get("/api/intermodal")
+def api_intermodal(o: str, d: str):
+    """Ruta metro + bus entre dos punts del mapa. Ho usen bus.pr1.es i metro.pr1.es
+    (MetroViu la demana a través del seu propi /api/intermodal)."""
+    po, pd = _punt(o), _punt(d)
+    if not po or not pd:
+        return JSONResponse({"error": "punts fora de l'àrea de València"}, status_code=400)
+    try:
+        vius = buses()["busos"]
+    except Exception:  # noqa: BLE001
+        vius = []
+    try:
+        return intermodal.ruta(po, pd, vius, _linies_en_servei())
+    except RuntimeError as e:                       # MetroViu caigut: no hi ha xarxa de metro
+        return JSONResponse({"error": str(e)}, status_code=503)
 
 
 @app.get("/api/ultimo")

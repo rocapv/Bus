@@ -49,6 +49,26 @@ https://geoportal.valencia.es/server/rest/services/EMT/Seguimiento_EMT/MapServer
 | `GET /api/registre_bus` | `id` | parades per on ha passat el bus |
 | `GET /api/historia_bus` | `id` | recorregut del bus, encara que ja no circule |
 | `GET/POST /api/xat` | `tipus`, `lloc` / `des_de` | missatges |
+| `GET /api/intermodal` | `o`, `d` (`lat,lng`) | ruta **metro + bus** entre dos punts (fins a tres alternatives); MetroViu la demana per mitjà del seu propi `/api/intermodal` |
+
+## Metro + Bus
+
+`backend/intermodal.py`: Dijkstra per hora d'arribada sobre les parades d'EMT i
+les estacions de Metrovalència (la xarxa la dona MetroViu, `127.0.0.1:8770` o
+`metro.pr1.es`), a peu entre elles (≤ 1,2 km a l'inici i al final, ≤ 400 m en
+un transbord). Metro: distància sobre la via i **l'espera real dels panells de
+FGV** (el primer tren de la línia en el sentit bo que passa després d'arribar a
+l'estació). Bus: EMT no publica arribades, així que espera estimada (6 min) i la
+distància pel recorregut de la línia entre les dues parades (precalculada,
+`data/intermodal_dist.json`, gitignored). Les línies que no han tingut cap bus
+en la darrera mitja hora (els nocturns de dia...) i les de metro sense cap tren
+als panells no entren. Dona fins a tres alternatives: combinada, només metro i
+només bus.
+
+`web/intermodal.js` és el MATEIX fitxer que a MetroViu (`data-app="bus"`): panell
+**Metro+Bus** (toca el mapa: origen i destí; pulsació llarga en qualsevol moment)
+i botó **⇄ Metro**, que obri `metro.pr1.es` en el mateix tros de mapa i amb la
+mateixa ruta (`#v=lat,lng,zoom&o=lat,lng&d=lat,lng`).
 
 ## La web
 
