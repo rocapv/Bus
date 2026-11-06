@@ -463,7 +463,13 @@ function enfocaLinia(l) {
   else for (const e of buses) if (e.linea === l) {
     const ll = e.marker.getLatLng(); b = b ? b.extend(ll) : L.latLngBounds(ll, ll);
   }
-  if (b && b.isValid()) map.fitBounds(b, { padding: [40, 40], maxZoom: 15 });
+  if (!b || !b.isValid()) return;
+  map.invalidateSize();
+  // el panell tapa la cantonada de dalt a l'esquerra: si el mapa és ample, deixa-li lloc
+  const hud = document.getElementById("hud");
+  const ample = hud && !hud.classList.contains("collapsed") && map.getSize().x > 2.5 * hud.offsetWidth;
+  map.fitBounds(b, { paddingTopLeft: [ample ? hud.offsetWidth + 30 : 30, 30],
+    paddingBottomRight: [30, 30], maxZoom: 15 });
 }
 function aplicaFiltre() {
   for (const [l, grp] of Object.entries(routeLayers)) {
