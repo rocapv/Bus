@@ -36,6 +36,18 @@ def desempaqueta(blob: bytes) -> list[list]:
     return json.loads(zlib.decompress(blob).decode("utf-8"))
 
 
+def gps_real(fecha_ms: int, ts: int) -> float | None:
+    """Instant real (epoch s) del GPS d'un bus. El `fecha` del geoportal és l'hora
+    LOCAL escrita com si fóra UTC (ve 1 h avançat a l'hivern, 2 a l'estiu), i ~1 de
+    cada 10 lectures ve sense eixe desfasament: el mateix bus salta una hora amunt i
+    avall d'una pasada a l'altra. Es lleva el nombre sencer d'hores que el separa de
+    l'hora de la pasada (`ts`): el GPS real sempre és d'uns segons abans."""
+    if not fecha_ms:
+        return None
+    f = fecha_ms / 1000
+    return round(f - round((f - ts) / 3600) * 3600, 1)
+
+
 def guarda(con: sqlite3.Connection, snap_id: int, ts: int, files: list) -> None:
     con.execute("INSERT OR REPLACE INTO lectures(snapshot_id, ts, dades) VALUES (?,?,?)",
                 (snap_id, ts, empaqueta(files)))

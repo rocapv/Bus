@@ -271,7 +271,7 @@ function actualitzaContBus(e) {
   lligaCompartir(cap);
   const vel = e.speed >= MOVE_MIN_MS ? `${Math.round(e.speed * 3.6)} km/h` : "parat";
   cont.querySelector(".pop-bus-ara").innerHTML =
-    `<div>${vel}${e.fecha ? ` · <span class="pop-edat">GPS fa <span class="c-edat">${fmtEdat(e.fecha)}</span></span>` : ""}</div>` +
+    `<div>${vel}${e.gps ? ` · <span class="pop-edat">GPS fa <span class="c-edat">${fmtEdat(e.gps)}</span></span>` : ""}</div>` +
     `<button type="button" class="pop-boto" data-hist="${e.id}">Recorregut d'avui</button>`;
   const hb = cont.querySelector("[data-hist]");
   if (hb) hb.onclick = () => { map.closePopup(); if (window.historiaBus) window.historiaBus(e.id); };
@@ -279,25 +279,46 @@ function actualitzaContBus(e) {
   if (x) x.dataset.nom = `${e.linea} · ${e.trayecto || ""}`;
   if (pestanyaActiva(cont) === "reg") omplirRegistre(cont.querySelector(".pop-reg-llista"));
 }
-// el `fecha` del geoportal no és un epoch UTC fiable (ve ~1-2 h avançat): l'edat es
-// mesura respecte al GPS més fresc de la pasada, que es pren com «ara» del servidor
-let maxFechaMs = 0, maxFechaRebut = 0;
-function fmtEdat(fechaMs) {
-  const s = Math.max(0, Math.round((maxFechaMs - fechaMs) / 1000 + (Date.now() - maxFechaRebut) / 1000));
+// Rellotge: el servidor diu la seua hora (`ara`) en cada resposta; amb això les
+// edats no depenen del rellotge del mòbil. `gps` ja ve corregit pel servidor (el
+// `fecha` cru del geoportal salta una hora: backend/lectures.gps_real).
+let difRellotge = 0;                       // hora del servidor - hora d'este aparell (s)
+const araServidor = () => Date.now() / 1000 + difRellotge;
+function prenRellotge(ara) { if (ara) difRellotge = ara - Date.now() / 1000; }
+function fmtSeg(s) {
+  s = Math.max(0, Math.round(s));
   if (s < 60) return `${s} s`;
   const m = Math.floor(s / 60);
   return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
 }
+const fmtEdat = (gps) => fmtSeg(araServidor() - gps);
+
+// distància AL LLARG de la ruta per anar de `de` a `a` (mateix sentit), o null si
+// no s'hi arriba en `maxM` metres
+function distRuta(linea, de, a, maxM) {
+  const idx = RG[linea]; if (!idx || !de || !a) return null;
+  let { pi, arc, dir } = de, acc = 0, guard = 0;
+  while (guard++ < 40) {
+    if (pi === a.pi && dir === a.dir) {
+      const d = (a.arc - arc) * dir;
+      if (d >= -0.5) return acc + Math.max(0, d) <= maxM ? acc + Math.max(0, d) : null;
+    }
+    const P = idx.paths[pi];
+    acc += dir > 0 ? P.len - arc : arc;
+    if (acc > maxM) return null;
+    const nxt = siguientePath(idx, pi, dir); if (!nxt) return null;
+    pi = nxt.pi; dir = nxt.dir; arc = dir > 0 ? 0 : idx.paths[pi].len;
+  }
+  return null;
+}
+const AVANT_MAX_M = 900;    // si la dada nova està fins a ací per davant: s'hi arriba accelerant
+const ARRERE_MAX_M = 600;   // si està fins a ací per darrere: el bus s'espera (no recula)
+const RECUPERA_S = 12;      // temps per recuperar la distància que li falta
 
 /* ---------- refresc: assigna àncora + velocitat a cada bus ---------- */
 function actualizarBuses(data, edad) {
   const busos = data.busos || [];
-  const dt = (data.ts && data.pts) ? Math.max(1, data.ts - data.pts) : 0;
-  // antiguitat del GPS de cada bus, RELATIVA al bus més fresc (maxFecha). Així és
-  // immune al rellotge, a la zona horària i al DST (el `fecha` del geoportal ve
-  // ~2h avançat). El bus més fresc -> gps_age 0; els altres, positiu.
-  const maxFecha = busos.reduce((m, x) => Math.max(m, x.fecha || 0), 0);
-  maxFechaMs = maxFecha; maxFechaRebut = Date.now() - edad * 1000;
+  const dtPas = (data.ts && data.pts) ? Math.max(1, data.ts - data.pts) : 0;
 
   for (const e of buses) e.usado = false;
   const nuevos = [];
@@ -310,6 +331,15 @@ function actualizarBuses(data, edad) {
 
   for (const b of busos) {
     const anchor = [b.lat, b.lng];
+    const vell = buses.find((e) => !e.usado && e.id === b.id);
+    // temps entre les dues posicions: el dels GPS (no el de les pasades: un GPS de fa
+    // 45 s i un de fa 10 s, a 60 s de pasada, donaven una velocitat inflada i el bus
+    // s'avançava massa i després reculava)
+    let dt = dtPas, gpsQuiet = false;
+    if (b.gps && b.pgps) {
+      if (b.gps > b.pgps + 1) dt = b.gps - b.pgps;
+      else gpsQuiet = true;                    // el GPS no s'ha actualitzat: res de nou
+    }
     // vel en recta (graus/s) només per desempatar el sentit sobre la via
     let vel = [0, 0];
     if (b.plat != null && dt > 0) vel = [(b.lat - b.plat) / dt, (b.lng - b.plng) / dt];
@@ -329,15 +359,14 @@ function actualizarBuses(data, edad) {
         if (vel[0] * snC.tang[0] + vel[1] * snC.tang[1] < 0) dir = -1;
       }
       if (speed > MAX_SPEED_MS) speed = 0;                  // emparellament dolent
+      if (gpsQuiet && vell && vell.linea === b.linea) speed = vell.speed;
       sim = { pi: snC.pi, arc: snC.arc, dir };
-      // COMPENSA EL RETARD: es dibuixa on el bus està ARA, no on estava. Retard =
-      // edad (antiguitat del snapshot, la mesura el servidor) + gps_age (com de vell
-      // és el GPS d'este bus respecte al més fresc). Amb topalls (75 s / 400 m) per no
-      // sobrepassar en busos ràpids que freguen o giren; la següent dada ho recorregix.
-      if (speed >= MOVE_MIN_MS && b.fecha) {
-        const gpsAge = (maxFecha - b.fecha) / 1000;
-        const lag = Math.max(0, Math.min(75, edad + gpsAge));
-        if (lag > 1) avanzarSim({ linea: b.linea, sim }, Math.min(speed * lag, 400));
+      // COMPENSA EL RETARD: es dibuixa on el bus està ARA, no on estava. Retard = ara
+      // (rellotge del servidor) - instant real del GPS d'este bus. Amb topalls (90 s /
+      // 450 m) per no sobrepassar en busos ràpids que frenen o giren.
+      if (speed >= MOVE_MIN_MS) {
+        const lag = b.gps ? Math.max(0, Math.min(90, araServidor() - b.gps)) : Math.min(75, edad);
+        if (lag > 1) avanzarSim({ linea: b.linea, sim }, Math.min(speed * lag, 450));
       }
     } else if (b.plat != null && dt > 0) {
       speed = distM([b.plat, b.plng], anchor) / dt;         // línia sense ruta (nocturnes)
@@ -345,7 +374,7 @@ function actualizarBuses(data, edad) {
     }
 
     // el mateix bus: pel seu número (el dona el servidor); si no, el més pròxim
-    let best = buses.find((e) => !e.usado && e.id === b.id) || null;
+    let best = vell || null;
     if (!best) {
       let bestD = MATCH_MAX_M;
       for (const e of buses) {
@@ -358,14 +387,29 @@ function actualizarBuses(data, edad) {
       best.usado = true;
       const altre = best.id !== b.id;
       if (best.linea !== b.linea) best.marker.setIcon(iconoBus(colorLinea(b.linea)));
-      Object.assign(best, { id: b.id, linea: b.linea, anchor, vel, speed, sim, fecha: b.fecha, trayecto: b.trayecto });
+      // SENSE MARXA ARRERE: el bus no salta a la posició nova. Si la té per davant
+      // (seguint la ruta), hi arriba accelerant uns segons; si la té per darrere (la
+      // simulació s'havia avançat: el bus s'ha parat en una parada o un semàfor),
+      // s'espera on és fins que el temps l'atrapa. Només salta si està lluny o ha
+      // canviat de línia o de sentit en capçalera.
+      let deute = 0, simNou = sim;
+      if (best.sim && sim && best.linea === b.linea) {
+        const davant = distRuta(b.linea, best.sim, sim, AVANT_MAX_M);
+        if (davant != null) { simNou = best.sim; deute = davant; }
+        else {
+          const darrere = distRuta(b.linea, sim, best.sim, ARRERE_MAX_M);
+          if (darrere != null) { simNou = best.sim; deute = -darrere; }
+        }
+      }
+      Object.assign(best, { id: b.id, linea: b.linea, anchor, vel, speed, sim: simNou, deute,
+        gps: b.gps, trayecto: b.trayecto });
       if (best.marker.isPopupOpen()) {
         if (altre) { best.cont = null; best.marker.getPopup().update(); posaEnllac(String(b.id)); }
         else actualitzaContBus(best);
       }
     } else {
       const e = { id: b.id, linea: b.linea, trayecto: b.trayecto, anchor, vel,
-        speed, sim, fecha: b.fecha, usado: true, cont: null };
+        speed, sim, deute: 0, gps: b.gps, usado: true, cont: null };
       e.marker = L.marker(sim ? pointAt(RG[b.linea].paths[sim.pi], sim.arc).pt : anchor,
         { icon: iconoBus(colorLinea(b.linea)) })
         .bindPopup(() => contBus(e), { minWidth: 260, maxWidth: 280 });
@@ -393,9 +437,20 @@ function animar() {
     const elm = e.marker.getElement();
     if (elm) elm.style.display = vis ? "" : "none";
     if (!vis) continue;
-    let ll, tang = null;
+    let ll, tang = null, enMarxa = e.speed >= MOVE_MIN_MS;
     if (e.sim) {
-      if (e.speed >= MOVE_MIN_MS && dtF > 0) avanzarSim(e, e.speed * dtF);
+      if (dtF > 0) {
+        let m = enMarxa ? e.speed * dtF : 0;
+        if (e.deute > 0) {            // la dada nova està per davant: accelera fins a atrapar-la
+          const r = Math.min(e.deute, Math.max(e.deute * dtF / RECUPERA_S, 4 * dtF));
+          m += r; e.deute -= r;
+        } else if (e.deute < 0) {     // s'havia avançat: s'espera (el temps paga el deute)
+          const r = Math.min(-e.deute, m);
+          m -= r; e.deute += r;
+        }
+        e.enMarxa = enMarxa = m / dtF >= MOVE_MIN_MS;   // s'espera: punt, no fletxa
+        if (m > 0) avanzarSim(e, m);
+      }
       const P = RG[e.linea].paths[e.sim.pi];
       const pa = pointAt(P, e.sim.arc);
       ll = pa.pt;
@@ -408,7 +463,7 @@ function animar() {
     if (!elm) continue;
     const dot = elm.querySelector(".bus-dot"), arr = elm.querySelector(".bus-arrow");
     if (!dot || !arr) continue;
-    if (e.speed >= MOVE_MIN_MS && tang) {
+    if ((e.sim && e.enMarxa != null ? e.enMarxa : e.speed >= MOVE_MIN_MS) && tang) {
       arr.style.transform = `rotate(${bearingScreen(ll, [ll[0] + tang[0], ll[1] + tang[1]])}deg)`;
       arr.style.display = "block"; dot.style.display = "none";
     } else {
@@ -422,21 +477,51 @@ function animar() {
    Amb el filtre posat, tocar-ne una altra l'afig i tocar-ne una visible la lleva;
    si no en queda cap, o es toca «Totes», tornen totes. */
 let filtreActiu = false;
+// Per què una línia no té busos (GET /api/linies): el geoportal de l'Ajuntament NO
+// publica el GPS d'unes 13 de les 43 línies; i de nit/de dia unes altres no circulen.
+let senseGps = new Set(), senseServei = new Set();
+async function carregaEstatLinies() {
+  try {
+    const j = await (await fetch(API + "api/linies?_=" + Date.now(), { cache: "no-store" })).json();
+    senseGps = new Set(j.sense_gps || []); senseServei = new Set(j.sense_servei || []);
+    construirLeyenda();
+  } catch (e) { /* ja es reintentarà */ }
+}
+const perNum = (a, b) => a.localeCompare(b, undefined, { numeric: true });
+function titolChip(l, n) {
+  if (senseGps.has(l)) return `Línia ${l}: l'Ajuntament no en publica el GPS`;
+  if (!n) return `Línia ${l}: cap bus ara` + (senseServei.has(l) ? " (fora de servei a esta hora)" : "");
+  return `Línia ${l}: ${n} bus${n === 1 ? "" : "os"}` + (filtreActiu ? "" : " · toca per veure-la sola");
+}
 function construirLeyenda() {
   const ley = document.getElementById("leyenda");
   ley.innerHTML = "";
-  const lineas = [...lineasVistas].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  for (const l of lineas) {
+  const compte = {};
+  for (const e of buses) compte[e.linea] = (compte[e.linea] || 0) + 1;
+  const lineas = [...lineasVistas].sort(perNum);
+  const ambGps = lineas.filter((l) => !senseGps.has(l)), sense = lineas.filter((l) => senseGps.has(l));
+  const fesChip = (l) => {
+    const n = compte[l] || 0;
     const chip = document.createElement("span");
-    chip.className = "chip" + (lineasVisibles.has(l) ? "" : " off");
-    chip.textContent = l;
+    chip.className = "chip" + (lineasVisibles.has(l) ? "" : " off")
+      + (senseGps.has(l) ? " sense-gps" : (n ? "" : " buida"));
+    chip.innerHTML = l + (n ? `<sup>${n}</sup>` : "");
     chip.dataset.linia = l;
-    chip.title = filtreActiu ? "" : "Mostra només la línia " + l;
+    chip.title = titolChip(l, n);
     chip.style.background = colorLinea(l);
     chip.onclick = () => tocaLinia(l);
-    ley.appendChild(chip);
+    return chip;
+  };
+  for (const l of ambGps) ley.appendChild(fesChip(l));
+  if (sense.length) {
+    const t = document.createElement("div");
+    t.className = "ley-sub";
+    t.textContent = "Sense GPS públic (l'Ajuntament no en dona la posició)";
+    ley.appendChild(t);
+    for (const l of sense) ley.appendChild(fesChip(l));
   }
-  document.getElementById("ley-count").textContent = lineas.length;
+  const ambBus = lineas.filter((l) => compte[l]).length;
+  document.getElementById("ley-count").textContent = `${ambBus} amb busos · ${lineas.length}`;
   actualitzaFiltreUI();
 }
 function tocaLinia(l) {
@@ -484,10 +569,7 @@ function aplicaFiltre() {
     if (vis && !stopsLayer.hasLayer(m)) stopsLayer.addLayer(m);
     else if (!vis && stopsLayer.hasLayer(m)) stopsLayer.removeLayer(m);
   }
-  document.querySelectorAll("#leyenda .chip").forEach((c) => {
-    c.classList.toggle("off", !lineasVisibles.has(c.dataset.linia));
-    c.title = filtreActiu ? "" : "Mostra només la línia " + c.dataset.linia;
-  });
+  construirLeyenda();
   actualitzaFiltreUI();
   animar();
   pintaStats();
@@ -506,15 +588,40 @@ if (totesBtn) totesBtn.addEventListener("click", mostraTotes);
 /* ---------- refresc de dades ---------- */
 let refrescant = false, nBusos = 0;
 function pintaStats() {
-  const edad = edadSeg == null ? "—" : (edadSeg < 90 ? edadSeg + " s" : Math.round(edadSeg / 60) + " min");
   let filtro = "";
   if (filtreActiu) {
     const n = buses.filter((e) => lineasVisibles.has(e.linea)).length;
-    const ls = [...lineasVisibles].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-    filtro = `<br><span style="color:#9a9aac">línia ${ls.join(", ")}: <b>${n}</b> busos</span>`;
+    const ls = [...lineasVisibles].sort(perNum);
+    let per = "";
+    if (!n && ls.every((l) => senseGps.has(l))) per = " · l'Ajuntament no en publica el GPS";
+    else if (!n && ls.every((l) => senseServei.has(l) || senseGps.has(l))) per = " · fora de servei a esta hora";
+    filtro = `<div class="stats-filtre">línia ${ls.join(", ")}: <b>${n}</b> bus${n === 1 ? "" : "os"}${per}</div>`;
   }
-  document.getElementById("stats").innerHTML =
-    `<b>${nBusos}</b> busos en directe<br>dades fa <b>${edad}</b>${filtro}`;
+  document.getElementById("stats").innerHTML = `<b>${nBusos}</b> busos en directe${filtro}`;
+}
+
+/* ---------- sincronització: EMT -> servidor -> este aparell ----------
+   Tres edats que corren cada segon: com de vell és el GPS que dona el geoportal,
+   quan el va llegir el servidor (i quan toca la pròxima lectura) i quan ha parlat
+   este aparell amb el servidor per última vegada. */
+let syncEmt = null, syncTs = null, syncInterval = 60, darrerContacte = 0, syncPols = 0;
+function estatEdat(s, bo, regular) { return s == null ? "" : (s <= bo ? "ok" : (s <= regular ? "lent" : "mal")); }
+function pintaSync() {
+  const el = document.getElementById("sync"); if (!el) return;
+  const ara = araServidor();
+  const eEmt = syncEmt ? ara - syncEmt : null;
+  const eSrv = syncTs ? ara - syncTs : null;
+  const eCli = darrerContacte ? (Date.now() - darrerContacte) / 1000 : null;
+  const prox = syncTs ? syncTs + syncInterval - ara : null;
+  const proxTxt = prox == null ? "" : (prox > 1 ? `pròxima en ${Math.round(prox)} s` : "llegint…");
+  const fila = (cls, nom, val, extra) =>
+    `<div class="sync-fila ${cls}"><span class="sync-punt"></span><span class="sync-nom">${nom}</span>` +
+    `<span class="sync-val">${val}</span>${extra ? `<span class="sync-extra">${extra}</span>` : ""}</div>`;
+  el.innerHTML =
+    fila(estatEdat(eEmt, 75, 180), "GPS d'EMT", eEmt == null ? "—" : "fa " + fmtSeg(eEmt), "") +
+    fila(estatEdat(eSrv, syncInterval + 20, syncInterval * 3), "Servidor", eSrv == null ? "—" : "llegit fa " + fmtSeg(eSrv), proxTxt) +
+    fila(estatEdat(eCli, 12, 30), "Este aparell", eCli == null ? "connectant…" : (eCli <= 12 ? "al dia" : "sense resposta fa " + fmtSeg(eCli)), "");
+  el.classList.toggle("pols", Date.now() - syncPols < 1200);
 }
 async function refrescar() {
   if (refrescant) return;
@@ -522,6 +629,10 @@ async function refrescar() {
   try {
     const data = await (await fetch(API + "api/buses?_=" + Date.now(), { cache: "no-store" })).json();
     edadSeg = data.edad_seg == null ? 0 : data.edad_seg;
+    prenRellotge(data.ara); darrerContacte = Date.now();
+    if (data.emt) syncEmt = data.emt;
+    if (data.interval) syncInterval = data.interval;
+    if (data.ts && data.ts !== syncTs) { syncTs = data.ts; syncPols = Date.now(); }
     // NOMÉS reajusta la simulació quan arriba una pasada NOVA (ts distint). Si no,
     // el client demana cada 1 min però la dada canvia cada 5 min: re-enganxar en
     // cada fetch faria saltar el bus arrere a la posició de fa minuts.
@@ -531,7 +642,9 @@ async function refrescar() {
     }
     animar();
     nBusos = (data.busos || []).length;
+    construirLeyenda();
     pintaStats();
+    pintaSync();
   } catch (e) {
     document.getElementById("stats").textContent = "sense connexió amb el servidor";
   } finally {
@@ -543,6 +656,7 @@ async function refrescar() {
 async function vigilaServidor() {
   try {
     const u = await (await fetch(API + "api/ultimo?_=" + Date.now(), { cache: "no-store" })).json();
+    prenRellotge(u.ara); darrerContacte = Date.now();
     if (u.ts && u.ts !== ultimoTs) await refrescar();
     if (window.xatNovetats) window.xatNovetats(u.xat || 0);
   } catch (e) { /* sense xarxa: ja es reintentarà */ }
@@ -550,10 +664,11 @@ async function vigilaServidor() {
 
 function tickSegon() {
   document.getElementById("reloj").textContent = new Date().toLocaleTimeString("ca-ES");
+  pintaSync();
   for (const e of buses) {
     if (!e.cont || !e.marker.isPopupOpen()) continue;
     const el = e.cont.querySelector(".c-edat");
-    if (el && e.fecha) el.textContent = fmtEdat(e.fecha);
+    if (el && e.gps) el.textContent = fmtEdat(e.gps);
   }
 }
 
@@ -573,6 +688,8 @@ document.getElementById("paradas-chk").addEventListener("change", actualizarPara
 (async function main() {
   await cargarRed();
   await refrescar();
+  carregaEstatLinies();
+  setInterval(carregaEstatLinies, 300000);
   if (window.iniciaXat) window.iniciaXat();
   obrirEnllac(ENLLAC_INICIAL);
   setInterval(refrescar, REFRESH_MS);

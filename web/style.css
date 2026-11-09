@@ -273,3 +273,33 @@ body.mode-historia .leaflet-marker-pane .leaflet-marker-icon:not(.hist-icona) { 
 @media (max-width: 600px) {
   #hist-panell { top: auto; bottom: 12px; left: 16px; right: 16px; transform: none; width: auto; }
 }
+
+/* ---------- sincronització EMT -> servidor -> aparell ---------- */
+#sync {
+  margin: 6px 0 8px; padding: 6px 8px; border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 11px; line-height: 1.55; transition: border-color 0.4s;
+}
+#sync.pols { border-color: rgba(87, 214, 141, 0.55); }
+.sync-fila { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sync-punt { width: 7px; height: 7px; border-radius: 50%; background: #6f6f80; flex: none; }
+.sync-fila.ok .sync-punt { background: #57d68d; }
+.sync-fila.lent .sync-punt { background: #f2c14e; }
+.sync-fila.mal .sync-punt { background: #ef5b5b; }
+.sync-nom { color: #8a8a98; min-width: 74px; }
+.sync-val { color: var(--txt); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sync-extra { color: #6f6f80; margin-left: auto; padding-left: 8px; font-variant-numeric: tabular-nums; }
+#sync.pols .sync-fila:nth-child(2) .sync-punt { box-shadow: 0 0 0 3px rgba(87, 214, 141, 0.35); }
+.stats-filtre { color: #9a9aac; margin-top: 2px; }
+
+/* ---------- llegenda: compte de busos i línies sense GPS ---------- */
+.chip sup { font-size: 8.5px; margin-left: 2px; vertical-align: 3px; opacity: 0.75; }
+.chip.buida { opacity: 0.45; }
+.chip.sense-gps {
+  opacity: 0.4; background-image: repeating-linear-gradient(135deg,
+    rgba(0, 0, 0, 0.22) 0 3px, transparent 3px 6px);
+}
+.chip.off.buida, .chip.off.sense-gps { opacity: 0.18; }
+.ley-sub {
+  flex-basis: 100%; margin: 6px 0 1px; font-size: 10px; color: #6f6f80; font-style: italic;
+}

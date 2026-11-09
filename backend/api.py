@@ -139,10 +139,28 @@ def buses():
     busos = []
     for f in lectures.de_pasada(con, cur["id"]):
         p = abans.get(f[0])
+        # gps / pgps: instant REAL del GPS (el `fecha` cru salta una hora: lectures.gps_real)
         busos.append({"id": f[0], "linea": f[1], "trayecto": f[2], "lat": f[3], "lng": f[4],
-                      "fecha": f[5], "plat": p[3] if p else None, "plng": p[4] if p else None})
+                      "fecha": f[5], "gps": lectures.gps_real(f[5], cur["ts"]),
+                      "plat": p[3] if p else None, "plng": p[4] if p else None,
+                      "pgps": lectures.gps_real(p[5], prev["ts"]) if p else None})
+    gps = sorted(b["gps"] for b in busos if b["gps"])
     return {"ts": cur["ts"], "pts": prev["ts"] if prev else None,
+            "ara": round(time.time(), 1),                       # rellotge del servidor
+            "emt": gps[len(gps) // 2] if gps else None,         # GPS típic de la pasada
+            "interval": poller.INTERVAL,
             "edad_seg": int(time.time()) - cur["ts"], "n": len(busos), "busos": busos}
+
+
+@app.get("/api/linies")
+def linies():
+    """Per què una línia no té busos: «sense_gps» = el geoportal no n'ha donat mai la
+    posició en 7 dies (l'Ajuntament només publica la d'unes 30 de les 43 línies);
+    «sense_servei» = sí que en dona, però no n'ha passat cap en l'última mitja hora."""
+    rutes = set(network()["routes"])
+    gps = _linies_amb_gps()
+    return {"sense_gps": sorted(rutes - gps) if gps else [],
+            "sense_servei": sorted(_linies_sense_servei())}
 
 
 def _punt(txt: str) -> tuple[float, float] | None:
@@ -227,7 +245,7 @@ def api_intermodal(o: str, d: str):
 def ultimo():
     con = _con()
     r = con.execute("SELECT ts FROM snapshots ORDER BY id DESC LIMIT 1").fetchone()
-    return {"ts": r["ts"] if r else None, "xat": xat.ultim_id(con)}
+    return {"ts": r["ts"] if r else None, "ara": round(time.time(), 1), "xat": xat.ultim_id(con)}
 
 
 _net_cache: dict | None = None

@@ -7,7 +7,7 @@
   <meta name="description" content="Els autobusos d'EMT València en directe, amb la seua posició GPS, el registre de cada parada i el recorregut de cada bus.">
   <meta name="theme-color" content="#0d0d12">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-  <link rel="stylesheet" href="style.css?v=202611061115">
+  <link rel="stylesheet" href="style.css?v=202611092400">
 </head>
 <body>
   <div id="map"></div>
@@ -19,6 +19,7 @@
         <span class="dot-live"></span><span class="marca">BUS</span><span class="sub-marca">EMT València</span>
       </div>
       <div id="stats">carregant…</div>
+      <div id="sync" aria-live="off" title="Com d'al dia està el que veus: el GPS que publica EMT, la lectura del servidor i la connexió d'este aparell"></div>
       <label id="paradas-tog"><input type="checkbox" id="paradas-chk" checked> mostra les parades</label>
       <div id="paradas-hint">acosta el zoom per veure-les</div>
       <div class="ley-tit"><span>Línies <span id="ley-count"></span></span><button id="ley-totes" type="button" style="display:none">Totes</button></div>
@@ -30,9 +31,9 @@
   <div id="reloj"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script src="app.js?v=202611061115"></script>
-  <script src="xat.js?v=202611061115"></script>
-  <script src="historia.js?v=202611061115"></script>
-  <script src="intermodal.js?v=202611062100" data-app="bus"></script>
+  <script src="app.js?v=202611092400"></script>
+  <script src="xat.js?v=202611092400"></script>
+  <script src="historia.js?v=202611092400"></script>
+  <script src="intermodal.js?v=202611092400" data-app="bus"></script>
 </body>
 </html>
