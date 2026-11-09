@@ -281,12 +281,13 @@ body.mode-historia .leaflet-marker-pane .leaflet-marker-icon:not(.hist-icona) { 
   font-size: 11px; line-height: 1.55; transition: border-color 0.4s;
 }
 #sync.pols { border-color: rgba(87, 214, 141, 0.55); }
-.sync-fila { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.sync-fila { display: flex; align-items: center; gap: 6px; white-space: nowrap; min-width: 0; }
+#sync { overflow: hidden; }
 .sync-punt { width: 7px; height: 7px; border-radius: 50%; background: #6f6f80; flex: none; }
 .sync-fila.ok .sync-punt { background: #57d68d; }
 .sync-fila.lent .sync-punt { background: #f2c14e; }
 .sync-fila.mal .sync-punt { background: #ef5b5b; }
-.sync-nom { color: #8a8a98; min-width: 74px; }
+.sync-nom { color: #8a8a98; min-width: 70px; }
 .sync-val { color: var(--txt); font-weight: 600; font-variant-numeric: tabular-nums; }
 .sync-extra { color: #6f6f80; margin-left: auto; padding-left: 8px; font-variant-numeric: tabular-nums; }
 #sync.pols .sync-fila:nth-child(2) .sync-punt { box-shadow: 0 0 0 3px rgba(87, 214, 141, 0.35); }

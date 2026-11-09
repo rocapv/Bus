@@ -311,9 +311,38 @@ function distRuta(linea, de, a, maxM) {
   }
   return null;
 }
+// busca `ll` sobre el camí que farà el bus des de `de` (en el seu sentit, fins a
+// `maxM`): {dist al llarg de la ruta, sim} del primer tram que hi passa a menys de tolM
+function buscaEnCami(linea, de, ll, maxM, tolM) {
+  const idx = RG[linea]; if (!idx || !de) return null;
+  let { pi, arc, dir } = de, acc = 0, guard = 0;
+  while (guard++ < 40 && acc <= maxM) {
+    const P = idx.paths[pi], cum = P.cum, pts = P.pts;
+    let best = null;
+    for (let si = 0; si + 1 < pts.length; si++) {
+      if (dir > 0 ? cum[si + 1] < arc : cum[si] > arc) continue;   // ja l'ha passat
+      const pr = projSeg(ll, pts[si], pts[si + 1]);
+      if (pr.dist > tolM) continue;
+      const parc = cum[si] + pr.t * (cum[si + 1] - cum[si]);
+      const d = (parc - arc) * dir;
+      if (d < 0 || acc + d > maxM) continue;
+      const score = pr.dist + 0.02 * d;          // el més pròxim, i a igualtat, el primer
+      if (!best || score < best.score) best = { score, dist: acc + d, sim: { pi, arc: parc, dir } };
+    }
+    if (best) return best;
+    acc += dir > 0 ? P.len - arc : arc;
+    const nxt = siguientePath(idx, pi, dir); if (!nxt) break;
+    pi = nxt.pi; dir = nxt.dir; arc = dir > 0 ? 0 : idx.paths[pi].len;
+  }
+  return null;
+}
+// el que ha avançat el bus des del seu GPS. Una mica per baix (0,9): passar-se obliga
+// a esperar, quedar-se curt només a accelerar uns segons
+const avancLag = (speed, lag) => Math.min(0.9 * speed * lag, 450);
 const AVANT_MAX_M = 900;    // si la dada nova està fins a ací per davant: s'hi arriba accelerant
-const ARRERE_MAX_M = 600;   // si està fins a ací per darrere: el bus s'espera (no recula)
+const ARRERE_MAX_M = 1200;  // si està fins a ací per darrere: el bus s'espera (no recula)
 const RECUPERA_S = 12;      // temps per recuperar la distància que li falta
+const TOL_CAMI_M = 40;      // GPS a menys d'açò del camí del bus: és damunt d'eixe camí
 
 /* ---------- refresc: assigna àncora + velocitat a cada bus ---------- */
 function actualizarBuses(data, edad) {
@@ -346,6 +375,7 @@ function actualizarBuses(data, edad) {
 
     // REAJUSTA la simulació: enganxa la posició actual (i l'anterior) a la via i
     // calcula velocitat i sentit AL LLARG de la ruta (no en recta)
+    const lag = b.gps ? Math.max(0, Math.min(90, araServidor() - b.gps)) : Math.min(75, edad);
     const snC = snapToLine(b.linea, anchor);
     const snP = b.plat != null ? snapToLine(b.linea, [b.plat, b.plng]) : null;
     let sim = null, speed = 0;
@@ -364,10 +394,7 @@ function actualizarBuses(data, edad) {
       // COMPENSA EL RETARD: es dibuixa on el bus està ARA, no on estava. Retard = ara
       // (rellotge del servidor) - instant real del GPS d'este bus. Amb topalls (90 s /
       // 450 m) per no sobrepassar en busos ràpids que frenen o giren.
-      if (speed >= MOVE_MIN_MS) {
-        const lag = b.gps ? Math.max(0, Math.min(90, araServidor() - b.gps)) : Math.min(75, edad);
-        if (lag > 1) avanzarSim({ linea: b.linea, sim }, Math.min(speed * lag, 450));
-      }
+      if (speed >= MOVE_MIN_MS && lag > 1) avanzarSim({ linea: b.linea, sim }, avancLag(speed, lag));
     } else if (b.plat != null && dt > 0) {
       speed = distM([b.plat, b.plng], anchor) / dt;         // línia sense ruta (nocturnes)
       if (speed > MAX_SPEED_MS) speed = 0;
@@ -392,8 +419,22 @@ function actualizarBuses(data, edad) {
       // simulació s'havia avançat: el bus s'ha parat en una parada o un semàfor),
       // s'espera on és fins que el temps l'atrapa. Només salta si està lluny o ha
       // canviat de línia o de sentit en capçalera.
-      let deute = 0, simNou = sim;
-      if (best.sim && sim && best.linea === b.linea) {
+      // Primer es busca la posició GPS SOBRE EL CAMÍ del bus (davant o darrere): la ida i
+      // la tornada sovint van pel mateix carrer i l'enganxe al més pròxim les confon.
+      let deute = 0, simNou = sim, trobat = false;
+      if (best.sim && best.linea === b.linea && RG[b.linea]) {
+        const cur = best.sim;
+        const f = buscaEnCami(b.linea, cur, anchor, AVANT_MAX_M, TOL_CAMI_M);
+        const r = buscaEnCami(b.linea, { pi: cur.pi, arc: cur.arc, dir: -cur.dir }, anchor, 2000, TOL_CAMI_M);
+        let rel = null;                         // on és el GPS respecte al bus pintat (m)
+        if (f && (!r || f.dist <= r.dist)) rel = f.dist;
+        else if (r) rel = -r.dist;
+        if (rel != null) {
+          const d = rel + (speed >= MOVE_MIN_MS ? avancLag(speed, lag) : 0);
+          if (d >= -ARRERE_MAX_M) { simNou = cur; deute = d; trobat = true; }
+        }
+      }
+      if (!trobat && best.sim && sim && best.linea === b.linea) {
         const davant = distRuta(b.linea, best.sim, sim, AVANT_MAX_M);
         if (davant != null) { simNou = best.sim; deute = davant; }
         else {
@@ -613,14 +654,14 @@ function pintaSync() {
   const eSrv = syncTs ? ara - syncTs : null;
   const eCli = darrerContacte ? (Date.now() - darrerContacte) / 1000 : null;
   const prox = syncTs ? syncTs + syncInterval - ara : null;
-  const proxTxt = prox == null ? "" : (prox > 1 ? `pròxima en ${Math.round(prox)} s` : "llegint…");
+  const proxTxt = prox == null ? "" : (prox > 1 ? `pròxima ${Math.round(prox)} s` : "llegint…");
   const fila = (cls, nom, val, extra) =>
     `<div class="sync-fila ${cls}"><span class="sync-punt"></span><span class="sync-nom">${nom}</span>` +
     `<span class="sync-val">${val}</span>${extra ? `<span class="sync-extra">${extra}</span>` : ""}</div>`;
   el.innerHTML =
     fila(estatEdat(eEmt, 75, 180), "GPS d'EMT", eEmt == null ? "—" : "fa " + fmtSeg(eEmt), "") +
-    fila(estatEdat(eSrv, syncInterval + 20, syncInterval * 3), "Servidor", eSrv == null ? "—" : "llegit fa " + fmtSeg(eSrv), proxTxt) +
-    fila(estatEdat(eCli, 12, 30), "Este aparell", eCli == null ? "connectant…" : (eCli <= 12 ? "al dia" : "sense resposta fa " + fmtSeg(eCli)), "");
+    fila(estatEdat(eSrv, syncInterval + 20, syncInterval * 3), "Servidor", eSrv == null ? "—" : "fa " + fmtSeg(eSrv), proxTxt) +
+    fila(estatEdat(eCli, 12, 30), "Este aparell", eCli == null ? "connectant…" : (eCli <= 12 ? "al dia" : "sense resposta " + fmtSeg(eCli)), "");
   el.classList.toggle("pols", Date.now() - syncPols < 1200);
 }
 async function refrescar() {
