@@ -336,9 +336,10 @@ function buscaEnCami(linea, de, ll, maxM, tolM) {
   }
   return null;
 }
-// el que ha avançat el bus des del seu GPS. Una mica per baix (0,9): passar-se obliga
-// a esperar, quedar-se curt només a accelerar uns segons
-const avancLag = (speed, lag) => Math.min(0.9 * speed * lag, 450);
+// el que ha avançat el bus des del seu GPS. Per baix (0,75): passar-se obliga a
+// esperar, quedar-se curt només a accelerar uns segons (QA de dia, 10/11: 0,9 deixava
+// un 19 % dels busos més de 300 m per davant del GPS)
+const avancLag = (speed, lag) => Math.min(0.75 * speed * lag, 450);
 const AVANT_MAX_M = 900;    // si la dada nova està fins a ací per davant: s'hi arriba accelerant
 const ARRERE_MAX_M = 1200;  // si està fins a ací per darrere: el bus s'espera (no recula)
 const RECUPERA_S = 12;      // temps per recuperar la distància que li falta
@@ -389,6 +390,10 @@ function actualizarBuses(data, edad) {
         if (vel[0] * snC.tang[0] + vel[1] * snC.tang[1] < 0) dir = -1;
       }
       if (speed > MAX_SPEED_MS) speed = 0;                  // emparellament dolent
+      // MITJANA amb la velocitat d'abans: el bus alterna trams ràpids i parades, i
+      // extrapolar un minut a la velocitat d'un tram ràpid el posava centenars de metres
+      // per davant (i després s'havia d'esperar parat)
+      if (!gpsQuiet && vell && vell.linea === b.linea && vell.speed != null) speed = 0.5 * (speed + vell.speed);
       if (gpsQuiet && vell && vell.linea === b.linea) speed = vell.speed;
       sim = { pi: snC.pi, arc: snC.arc, dir };
       // COMPENSA EL RETARD: es dibuixa on el bus està ARA, no on estava. Retard = ara
